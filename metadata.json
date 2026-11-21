@@ -1,0 +1,6 @@
+{
+  "name": "Oasis Resort Skardu",
+  "description": "Luxury alpine cold-desert resort guest portal, instant room booking, in-room dining, and full hospitality & kitchen operations desk.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
