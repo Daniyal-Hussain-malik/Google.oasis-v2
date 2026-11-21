@@ -3,9 +3,9 @@ import { Router } from 'express';
 import { Op } from 'sequelize';
 import { formLimit } from '../middleware/limits.js';
 import BlogPost from '../models/BlogPost.js';
+import { requireGuestSession } from '../services/guestAuth.js';
 import { blogSubmitted } from '../services/notifications.js';
 import { badRequest, HttpError, notFound, text } from '../utils/http.js';
-import { findGuestBooking } from './public.js';
 
 const router = Router();
 
@@ -47,11 +47,10 @@ router.get('/:slug', async (req, res) => {
   res.json({ ...card(post), body: post.body });
 });
 
-// Only someone whose stay is over can write. Booking number + phone proves the
-// stay, the same way the booking lookup does.
+// Only an OTP-verified guest whose stay is over can write.
 router.post('/submit', formLimit, async (req, res) => {
   const body = req.body || {};
-  const reservation = await findGuestBooking(body);
+  const reservation = await requireGuestSession(req, { expectedBookingNumber: body.bookingNumber });
   if (reservation.status !== 'checked_out') {
     throw new HttpError(403, 'Posts can be shared after your stay, once you have checked out.');
   }
@@ -86,7 +85,7 @@ router.post('/submit', formLimit, async (req, res) => {
 
 // The guest's own posts and where each one stands.
 router.post('/mine', formLimit, async (req, res) => {
-  const reservation = await findGuestBooking(req.body || {});
+  const reservation = await requireGuestSession(req, { expectedBookingNumber: req.body?.bookingNumber });
   const posts = await BlogPost.findAll({ where: { reservation: reservation.id }, order: [['createdAt', 'DESC']] });
   res.json({
     canWrite: reservation.status === 'checked_out',

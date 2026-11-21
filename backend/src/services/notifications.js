@@ -5,6 +5,13 @@ import Settings from '../models/Settings.js';
 import * as emails from './emails.js';
 import { buildInvoice, invoicePdf } from './invoice.js';
 import { deliver, notify } from './mail.js';
+import {
+  sendBookingCancellationWhatsApp,
+  sendBookingConfirmationWhatsApp,
+  sendCheckInWelcomeWhatsApp,
+  sendCheckOutThankYouWhatsApp,
+  sendPaymentDecisionWhatsApp,
+} from './whatsapp.js';
 
 // The one place that decides who gets which email, and when. Every function
 // swallows its own errors: a mail problem must never fail a booking, a check-in
@@ -48,12 +55,15 @@ async function safely(label, job) {
 
 const adminTo = () => env.mail.adminTo;
 
-// New booking: the guest gets a confirmation; the team hears about website bookings.
+// New booking: the guest gets a confirmation (email + WhatsApp); the team hears about website bookings.
 export function bookingCreated(reservation) {
   return safely('booking', async () => {
     const hotel = await hotelInfo();
     const r = view(reservation, hotel);
-    const jobs = [notify({ to: r.guest.email, ...emails.bookingConfirmation(r, hotel) })];
+    const jobs = [
+      notify({ to: r.guest.email, ...emails.bookingConfirmation(r, hotel) }),
+      sendBookingConfirmationWhatsApp(reservation, hotel),
+    ];
     if (r.source === 'website') jobs.push(notify({ to: adminTo(), ...emails.adminNewBooking(r, hotel) }));
     return Promise.all(jobs);
   });
@@ -62,27 +72,36 @@ export function bookingCreated(reservation) {
 export function bookingCancelled(reservation) {
   return safely('cancellation', async () => {
     const hotel = await hotelInfo();
-    return notify({ to: reservation.guest.email, ...emails.bookingCancelled(view(reservation, hotel), hotel) });
+    return Promise.all([
+      notify({ to: reservation.guest.email, ...emails.bookingCancelled(view(reservation, hotel), hotel) }),
+      sendBookingCancellationWhatsApp(reservation, hotel),
+    ]);
   });
 }
 
 export function guestCheckedIn(reservation) {
   return safely('welcome', async () => {
     const hotel = await hotelInfo();
-    return notify({ to: reservation.guest.email, ...emails.guestWelcome(view(reservation, hotel), hotel) });
+    return Promise.all([
+      notify({ to: reservation.guest.email, ...emails.guestWelcome(view(reservation, hotel), hotel) }),
+      sendCheckInWelcomeWhatsApp(reservation, hotel),
+    ]);
   });
 }
 
-// Check-out: a thank-you with the final invoice as a PDF.
+// Check-out: a thank-you with the final invoice as a PDF + WhatsApp summary.
 export function guestCheckedOut(reservation) {
   return safely('checkout', async () => {
     const hotel = await hotelInfo();
     const invoice = await buildInvoice(reservation.id);
-    return notify({
-      to: reservation.guest.email,
-      ...emails.thankYou(view(reservation, hotel), hotel, invoice.invoiceNumber),
-      attachments: [{ filename: `${invoice.invoiceNumber}.pdf`, content: invoicePdf(invoice), contentType: 'application/pdf' }],
-    });
+    return Promise.all([
+      notify({
+        to: reservation.guest.email,
+        ...emails.thankYou(view(reservation, hotel), hotel, invoice.invoiceNumber),
+        attachments: [{ filename: `${invoice.invoiceNumber}.pdf`, content: invoicePdf(invoice), contentType: 'application/pdf' }],
+      }),
+      sendCheckOutThankYouWhatsApp(reservation, hotel, invoice.invoiceNumber),
+    ]);
   });
 }
 
@@ -142,22 +161,43 @@ export function paymentProofSubmitted(claim, reservation) {
   });
 }
 
-// Staff confirmed or declined a payment proof: tell the guest.
+// Staff confirmed or declined a payment proof: tell the guest via email + WhatsApp.
 export function paymentProofDecided(claim) {
   return safely('payment decision', async () => {
     let guest;
     if (claim.target === 'reservation') {
       const reservation = await Reservation.findByPk(claim.reservation);
-      if (reservation) guest = { name: reservation.guestName, email: reservation.guest.email };
+      if (reservation) {
+        guest = {
+          name: reservation.guestName,
+          email: reservation.guest.email,
+          phone: reservation.guest.phone,
+          bookingNumber: reservation.bookingNumber,
+        };
+      }
     } else {
       const order = await RestaurantOrder.findByPk(claim.order);
       const reservation = order?.reservation ? await Reservation.findByPk(order.reservation) : null;
-      if (reservation) guest = { name: reservation.guestName, email: reservation.guest.email };
+      if (reservation) {
+        guest = {
+          name: reservation.guestName,
+          email: reservation.guest.email,
+          phone: reservation.guest.phone,
+          bookingNumber: reservation.bookingNumber,
+        };
+      }
     }
-    if (!guest?.email) return null;
+    if (!guest?.email && !guest?.phone) return null;
     const hotel = await hotelInfo();
-    const mail = claim.status === 'confirmed' ? emails.paymentConfirmed(claim, guest, hotel) : emails.paymentDeclined(claim, guest, hotel);
-    return notify({ to: guest.email, ...mail });
+    const jobs = [];
+    if (guest.email) {
+      const mail = claim.status === 'confirmed' ? emails.paymentConfirmed(claim, guest, hotel) : emails.paymentDeclined(claim, guest, hotel);
+      jobs.push(notify({ to: guest.email, ...mail }));
+    }
+    if (guest.phone) {
+      jobs.push(sendPaymentDecisionWhatsApp(claim, guest, hotel));
+    }
+    return Promise.all(jobs);
   });
 }
 

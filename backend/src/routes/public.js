@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { Op } from 'sequelize';
 import { env } from '../config/env.js';
-import { formLimit, insightLimit } from '../middleware/limits.js';
+import { formLimit, insightLimit, loginLimit } from '../middleware/limits.js';
 import Enquiry from '../models/Enquiry.js';
 import Feedback from '../models/Feedback.js';
 import Insight, { INSIGHT_TYPES } from '../models/Insight.js';
@@ -10,10 +10,23 @@ import Reservation from '../models/Reservation.js';
 import RoomType from '../models/RoomType.js';
 import Settings from '../models/Settings.js';
 import { availability, createReservation, readStay } from '../services/booking.js';
+import { handleOtaWebhook } from '../services/channelManager.js';
+import {
+  clearGuestSessionCookie,
+  getVerifiedGuestReservation,
+  lookupReservationByBookingAndPhone,
+  requestGuestOtp,
+  requireGuestSession,
+  setGuestSessionCookie,
+  verifyGuestOtp,
+} from '../services/guestAuth.js';
+import { exportRoomIcal } from '../services/ical.js';
 import { buildLoyaltySummary, redeemLoyaltyReward, syncLoyaltyForGuest } from '../services/loyalty.js';
 import { bookingCreated, enquiryCreated, feedbackReceived } from '../services/notifications.js';
+import { getCloudMediaStream } from '../services/storage.js';
+import { processWhatsAppWebhook, verifyWhatsAppWebhookChallenge } from '../services/whatsapp.js';
 import { todayIn } from '../utils/dates.js';
-import { badRequest, int, isEmail, notFound, phoneKey, text } from '../utils/http.js';
+import { badRequest, int, isEmail, notFound, text } from '../utils/http.js';
 import { equalsNoCase } from '../utils/sql.js';
 
 const router = Router();
@@ -202,6 +215,43 @@ router.get('/availability', async (req, res) => {
   res.json({ ...stay, results: await availability(stay) });
 });
 
+// Phase 1: Outbound per-room iCal (.ics) feed for Airbnb / Booking.com / Vrbo.
+router.get('/ical/room/:roomId/:token.ics', async (req, res) => {
+  const { filename, ics } = await exportRoomIcal(req.params.roomId, req.params.token);
+  res.set({
+    'Content-Type': 'text/calendar; charset=utf-8',
+    'Content-Disposition': `inline; filename="${filename}"`,
+    'Cache-Control': 'no-cache, max-age=0',
+  });
+  res.send(ics);
+});
+
+// Phase 2: Inbound Channel Manager webhook receiver (Channex / Beds24 / SiteMinder).
+router.post('/ota/webhook/:provider', async (req, res) => {
+  const result = await handleOtaWebhook({
+    provider: req.params.provider,
+    headers: req.headers,
+    body: req.body,
+    rawBody: req.rawBody,
+  });
+  res.status(result.action === 'created' ? 201 : 200).json(result);
+});
+
+// Meta WhatsApp Business Cloud API webhook verification & status/reply updates.
+router.get('/whatsapp/webhook', async (req, res) => {
+  const challenge = await verifyWhatsAppWebhookChallenge(req.query);
+  res.type('text/plain').status(200).send(challenge);
+});
+
+router.post('/whatsapp/webhook', async (req, res) => {
+  const result = await processWhatsAppWebhook({
+    body: req.body,
+    rawBody: req.rawBody,
+    signature: req.headers['x-hub-signature-256'],
+  });
+  res.status(200).json(result);
+});
+
 function readGuest(body) {
   const guest = {
     firstName: text(body.firstName, 60),
@@ -218,6 +268,24 @@ function readGuest(body) {
   if (Object.keys(errors).length) throw badRequest(Object.values(errors)[0], errors);
   return guest;
 }
+
+// Cloud Object Storage / local fallback media proxy route
+router.get('/media/:folder/:file', async (req, res) => {
+  const key = `${req.params.folder}/${req.params.file}`;
+  const obj = await getCloudMediaStream(key);
+  res.set({
+    'Content-Type': obj.contentType,
+    'Cache-Control': obj.cacheControl,
+    'Cross-Origin-Resource-Policy': 'cross-origin',
+  });
+  if (obj.buffer) return res.send(obj.buffer);
+  if (obj.body?.pipe) return obj.body.pipe(res);
+  if (obj.body?.transformToByteArray) {
+    const bytes = await obj.body.transformToByteArray();
+    return res.send(Buffer.from(bytes));
+  }
+  throw notFound('Media object not found.');
+});
 
 router.post('/reservations', formLimit, async (req, res) => {
   const body = req.body || {};
@@ -240,34 +308,65 @@ router.post('/reservations', formLimit, async (req, res) => {
   });
   bookingCreated(reservation);
   await syncLoyaltyForGuest(reservation.guest.phoneKey).catch(() => {});
+  // Grant immediate verified guest cookie for the booking confirmation screen
+  setGuestSessionCookie(req, res, reservation);
   res.status(201).json(reservation.toPublic());
 });
 
 export async function findGuestBooking(body) {
-  const bookingNumber = text(body.bookingNumber, 20).toUpperCase().replace(/\s/g, '');
-  const key = phoneKey(body.phone);
-  if (!bookingNumber || key.length < 10) throw badRequest('Enter the booking number and the phone number on the reservation.');
-  const reservation = await Reservation.findOne({ where: { bookingNumber, guest_phoneKey: key } });
-  // One message for both cases, so the form cannot be used to test booking numbers.
-  if (!reservation) throw notFound('We could not find a booking with that number and phone.');
-  return reservation;
+  return lookupReservationByBookingAndPhone(body);
 }
 
+// Guest OTP verification endpoints (Email / WhatsApp / SMS)
+router.post('/guest/otp/request', loginLimit, async (req, res) => {
+  const body = req.body || {};
+  const result = await requestGuestOtp({
+    bookingNumber: body.bookingNumber,
+    phone: body.phone,
+    channel: body.channel,
+  });
+  res.json(result);
+});
+
+router.post('/guest/otp/verify', loginLimit, async (req, res) => {
+  const body = req.body || {};
+  const reservation = await verifyGuestOtp({
+    bookingNumber: body.bookingNumber,
+    phone: body.phone,
+    code: body.code,
+  });
+  setGuestSessionCookie(req, res, reservation);
+  const loyalty = await buildLoyaltySummary(reservation);
+  res.json({ ok: true, reservation: { ...reservation.toPublic(), loyalty } });
+});
+
+router.get('/guest/session', async (req, res) => {
+  const reservation = await getVerifiedGuestReservation(req);
+  if (!reservation) return res.json({ authenticated: false });
+  const loyalty = await buildLoyaltySummary(reservation);
+  res.json({ authenticated: true, reservation: { ...reservation.toPublic(), loyalty } });
+});
+
+router.post('/guest/logout', (req, res) => {
+  clearGuestSessionCookie(req, res);
+  res.json({ ok: true });
+});
+
 router.post('/reservations/lookup', formLimit, async (req, res) => {
-  const reservation = await findGuestBooking(req.body || {});
+  const reservation = await requireGuestSession(req, { expectedBookingNumber: req.body?.bookingNumber });
   const loyalty = await buildLoyaltySummary(reservation);
   res.json({ ...reservation.toPublic(), loyalty });
 });
 
 router.post('/loyalty/summary', formLimit, async (req, res) => {
-  const reservation = await findGuestBooking(req.body || {});
+  const reservation = await requireGuestSession(req, { expectedBookingNumber: req.body?.bookingNumber });
   const loyalty = await buildLoyaltySummary(reservation);
   res.json(loyalty);
 });
 
 router.post('/loyalty/redeem', formLimit, async (req, res) => {
   const body = req.body || {};
-  const reservation = await findGuestBooking(body);
+  const reservation = await requireGuestSession(req, { expectedBookingNumber: body.bookingNumber });
   const result = await redeemLoyaltyReward(reservation.id, {
     rewardKey: body.rewardKey,
     note: body.note,
@@ -282,8 +381,8 @@ router.post('/feedback', formLimit, async (req, res) => {
   if (rating < 1 || rating > 5) throw badRequest('Choose a rating from 1 to 5.', { rating: 'Required' });
 
   // Verified post-checkout booking review flow (used from /booking lookup page).
-  if (body.bookingNumber && body.phone) {
-    const reservation = await findGuestBooking(body);
+  if (body.bookingNumber) {
+    const reservation = await requireGuestSession(req, { expectedBookingNumber: body.bookingNumber });
     if (reservation.status !== 'checked_out') throw badRequest('Feedback opens after checkout.');
 
     // One rating per stay: a second submission replaces the first.

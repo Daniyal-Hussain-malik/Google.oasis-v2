@@ -1,5 +1,5 @@
 import { DataTypes as D, Model } from 'sequelize';
-import { sequelize } from '../config/db.js';
+import { currentTx, sequelize, tx } from '../config/db.js';
 
 // One row per named sequence (booking numbers per year, order numbers per day...).
 class Counter extends Model {}
@@ -11,7 +11,9 @@ Counter.init(
 // The number is taken inside one transaction that holds the row lock until commit,
 // and calls in this process also queue, so two requests never get the same number.
 let queue = Promise.resolve();
-export function nextSequence(name) {
+export function nextSequence(name, transaction) {
+  const active = transaction || currentTx();
+  if (active) return take(name, active);
   const run = queue.then(() => take(name));
   queue = run.catch(() => {});
   return run;
@@ -22,21 +24,20 @@ async function bump(name, transaction) {
   return updated;
 }
 
-async function take(name) {
-  const work = async (transaction) => {
-    if (!(await bump(name, transaction))) {
+async function take(name, transaction) {
+  const work = async (t) => {
+    if (!(await bump(name, t))) {
       try {
-        await Counter.create({ name, seq: 1 }, { transaction });
+        await Counter.create({ name, seq: 1 }, { transaction: t });
         return 1;
       } catch (error) {
         if (error?.name !== 'SequelizeUniqueConstraintError') throw error;
-        await bump(name, transaction);
+        await bump(name, t);
       }
     }
-    return (await Counter.findByPk(name, { transaction })).seq;
+    return (await Counter.findByPk(name, { transaction: t })).seq;
   };
-  // SQLite (tests only) has one connection, so no transaction is needed there.
-  return sequelize.getDialect() === 'sqlite' ? work(undefined) : sequelize.transaction(work);
+  return transaction ? work(transaction) : tx(work);
 }
 
 export default Counter;

@@ -1,5 +1,3 @@
-import fs from 'node:fs/promises';
-import path from 'node:path';
 import { Router } from 'express';
 import { Op } from 'sequelize';
 import jwt from 'jsonwebtoken';
@@ -7,8 +5,9 @@ import { env } from '../../config/env.js';
 import { ACCESS } from '../../config/roles.js';
 import { requireRole } from '../../middleware/auth.js';
 import { loginLimit } from '../../middleware/limits.js';
+import { upload } from '../../middleware/upload.js';
 import { sendEnquiryReply } from '../../services/notifications.js';
-import { upload, UPLOAD_DIR } from '../../middleware/upload.js';
+import { deleteMediaObject, getStorageStatus, uploadImageObject } from '../../services/storage.js';
 import { sequelize, toId } from '../../models/_base.js';
 import Enquiry from '../../models/Enquiry.js';
 import Feedback from '../../models/Feedback.js';
@@ -224,21 +223,24 @@ router.put('/settings', managers, requireUnlock, async (req, res) => {
   res.json(settings);
 });
 
-// Image uploads. The returned url is what goes into a room type, menu item or activity.
+// Image uploads. Stored in Cloud Object Storage (AWS S3 / Cloudflare R2 / GCS) when configured.
 
-router.post('/uploads', managers, upload.single('image'), (req, res) => {
+router.get('/uploads/status', managers, (_req, res) => {
+  res.json(getStorageStatus());
+});
+
+router.post('/uploads', managers, upload.single('image'), async (req, res) => {
   if (!req.file) throw badRequest('Attach an image in the "image" field.');
-  res.status(201).json({ url: `/uploads/${req.file.filename}` });
+  const uploaded = await uploadImageObject({
+    buffer: req.file.buffer,
+    mimeType: req.file.mimetype,
+    folder: 'media',
+  });
+  res.status(201).json(uploaded);
 });
 
 router.delete('/uploads/:name', managers, async (req, res) => {
-  const name = path.basename(req.params.name);
-  try {
-    await fs.unlink(path.join(UPLOAD_DIR, name));
-  } catch (error) {
-    if (error.code === 'ENOENT') throw notFound('File not found.');
-    throw error;
-  }
+  await deleteMediaObject(req.params.name);
   res.status(204).end();
 });
 

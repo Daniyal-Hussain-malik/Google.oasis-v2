@@ -50,12 +50,15 @@ import {
   AdminRoomTypesPage,
   AdminRoomsPage,
 } from '@/src/pages/admin/AdminOperationsPages';
+import { AdminOtaSyncPage } from '@/src/pages/admin/AdminOtaSyncPage';
+import { AdminWhatsAppPage } from '@/src/pages/admin/AdminWhatsAppPage';
 import {
   AdminBlogPage,
   AdminInsightsPage,
   AdminSiteSettingsPage,
   AdminUsersPage,
 } from '@/src/pages/admin/AdminWebsitePages';
+import { AdminSystemPage } from '@/src/pages/admin/AdminSystemPage';
 import {
   RestaurantCategoriesPage,
   RestaurantKitchenPage,
@@ -308,6 +311,22 @@ export default function App() {
           }
         />
         <Route
+          path="/admin/ota-sync"
+          element={
+            <RequireStaff roles={FRONT}>
+              <AdminOtaSyncPage />
+            </RequireStaff>
+          }
+        />
+        <Route
+          path="/admin/whatsapp"
+          element={
+            <RequireStaff roles={FRONT}>
+              <AdminWhatsAppPage />
+            </RequireStaff>
+          }
+        />
+        <Route
           path="/admin/blog"
           element={
             <RequireStaff roles={SUPER}>
@@ -336,6 +355,14 @@ export default function App() {
           element={
             <RequireStaff roles={SUPER}>
               <AdminUsersPage />
+            </RequireStaff>
+          }
+        />
+        <Route
+          path="/admin/system"
+          element={
+            <RequireStaff roles={SUPER}>
+              <AdminSystemPage />
             </RequireStaff>
           }
         />

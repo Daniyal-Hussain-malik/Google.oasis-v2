@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { FRONTDESK, ROLES, SUPER_ADMIN } from '../../config/roles.js';
+import { revokeAllUserTokens } from '../../middleware/auth.js';
 import { toId } from '../../models/_base.js';
 import User from '../../models/User.js';
 import { staffAccountCreated } from '../../services/notifications.js';
@@ -29,6 +30,7 @@ router.patch('/:id', async (req, res) => {
   const user = await User.unscoped().findByPk(toId(req.params.id));
   if (!user) throw notFound('User not found.');
   const isSelf = String(user._id) === String(req.user._id);
+  let revokeTokens = false;
   if (req.body?.name !== undefined) user.name = text(req.body.name, 80);
   if (req.body?.role !== undefined) {
     if (!ROLES.includes(req.body.role)) throw badRequest('Unknown role.');
@@ -38,12 +40,16 @@ router.patch('/:id', async (req, res) => {
   if (req.body?.active !== undefined) {
     if (isSelf && !req.body.active) throw badRequest('You cannot deactivate your own account.');
     user.active = Boolean(req.body.active);
+    if (!user.active) revokeTokens = true;
   }
   if (req.body?.password) {
     if (String(req.body.password).length < 8) throw badRequest('The password must be at least 8 characters.');
     user.password = String(req.body.password);
+    user.passwordChangedAt = new Date();
+    revokeTokens = true;
   }
   await user.save();
+  if (revokeTokens) await revokeAllUserTokens(user.id);
   res.json(user);
 });
 

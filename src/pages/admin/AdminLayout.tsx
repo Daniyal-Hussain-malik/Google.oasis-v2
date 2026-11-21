@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Link, NavLink, useLocation } from 'react-router-dom';
 import { Collapse, IconButton, Tooltip } from '@mui/material';
 import {
+  Activity,
   BarChart3,
   BedDouble,
   BookOpen,
@@ -12,10 +13,12 @@ import {
   CreditCard,
   ExternalLink,
   FileText,
+  Globe2,
   Home,
   LayoutDashboard,
   LogOut,
   Menu,
+  MessageCircle,
   MessageSquare,
   Moon,
   PanelLeftClose,
@@ -51,6 +54,7 @@ const NAV_GROUPS: Array<{ group: string; links: NavItem[] }> = [
       { to: '/admin/payment-proofs', label: 'Payment Proofs', roles: FRONT, icon: <CreditCard className="h-4 w-4 shrink-0" /> },
       { to: '/admin/enquiries', label: 'Enquiries', roles: FRONT, icon: <MessageSquare className="h-4 w-4 shrink-0" /> },
       { to: '/admin/feedback', label: 'Guest Feedback', roles: FRONT, icon: <Star className="h-4 w-4 shrink-0" /> },
+      { to: '/admin/whatsapp', label: 'WhatsApp Cloud API', roles: FRONT, icon: <MessageCircle className="h-4 w-4 shrink-0" /> },
     ],
   },
   {
@@ -72,6 +76,7 @@ const NAV_GROUPS: Array<{ group: string; links: NavItem[] }> = [
     links: [
       { to: '/admin/room-types', label: 'Room Types', roles: FRONT, icon: <Building2 className="h-4 w-4 shrink-0" /> },
       { to: '/admin/rooms', label: 'Rooms Inventory', roles: FRONT, icon: <BedDouble className="h-4 w-4 shrink-0" /> },
+      { to: '/admin/ota-sync', label: 'OTA & Channel Sync', roles: FRONT, icon: <Globe2 className="h-4 w-4 shrink-0" /> },
     ],
   },
   {
@@ -84,7 +89,10 @@ const NAV_GROUPS: Array<{ group: string; links: NavItem[] }> = [
   },
   {
     group: 'System',
-    links: [{ to: '/admin/users', label: 'Staff Accounts', roles: SUPER, icon: <Users className="h-4 w-4 shrink-0" /> }],
+    links: [
+      { to: '/admin/users', label: 'Staff Accounts', roles: SUPER, icon: <Users className="h-4 w-4 shrink-0" /> },
+      { to: '/admin/system', label: 'System & Backups', roles: SUPER, icon: <Activity className="h-4 w-4 shrink-0" /> },
+    ],
   },
 ];
 

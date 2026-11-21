@@ -24,6 +24,13 @@ const sweep = () => purgeInsights().catch((error) => console.error(`Insight clea
 sweep();
 setInterval(sweep, 24 * 60 * 60 * 1000).unref();
 
+// Poll enabled external OTA iCal feeds every 15 minutes.
+import('./services/ical.js').then(({ syncAllIcalSources }) => {
+  setInterval(() => {
+    syncAllIcalSources({ onlyAuto: true }).catch((error) => console.error(`iCal auto-sync failed: ${error.message}`));
+  }, 15 * 60 * 1000).unref();
+});
+
 const mail = await verifyMail();
 if (mail.ok && mailMode === 'smtp') console.log(`Email: connected to ${env.mail.host} as ${env.mail.user || '(no login)'}; sending from ${env.mail.from}`);
 else if (!mail.ok) console.error(`Email: NOT working (${mail.category}). ${mail.error}`);

@@ -4,6 +4,7 @@ import { Alert, Step, StepLabel, Stepper } from '@mui/material';
 import { Minus, Plus, ShoppingBag, Trash2, UtensilsCrossed } from 'lucide-react';
 import { toast } from 'sonner';
 import { GuestLayout } from '@/src/components/guest/GuestLayout';
+import { GuestOtpGate } from '@/src/components/guest/GuestOtpGate';
 import { InfoHoverCard, ShowcaseHoverCard } from '@/src/components/guest/InteractiveHoverCard';
 import { PaymentAccounts, PaymentProofForm } from '@/src/components/guest/PaymentSection';
 import { Button } from '@/src/components/ui/button';
@@ -18,7 +19,6 @@ import { Tabs, TabsList, TabsTrigger } from '@/src/components/ui/tabs';
 import { Textarea } from '@/src/components/ui/textarea';
 import { api, media, pkr } from '@/src/lib/api';
 
-const SESSION_KEY = 'oasis_guest_session';
 const KITCHEN_STEPS = [
   ['new', 'Received'],
   ['accepted', 'Accepted'],
@@ -49,20 +49,8 @@ function lineUnit(line: CartLine) {
   return base + line.addOns.reduce((sum, a) => sum + a.price, 0);
 }
 
-function readGuestSession() {
-  try {
-    return JSON.parse(sessionStorage.getItem(SESSION_KEY) || 'null');
-  } catch {
-    return null;
-  }
-}
-
 export function OrderPage() {
-  const [session, setSession] = useState<any>(readGuestSession);
-  const [bookingNumber, setBookingNumber] = useState('');
-  const [phone, setPhone] = useState('');
-  const [authError, setAuthError] = useState('');
-  const [authBusy, setAuthBusy] = useState(false);
+  const [session, setSession] = useState<any>(null);
 
   const [menuData, setMenuData] = useState<any>({ items: [], categories: [], rates: { tax: 0, service: 0 } });
   const [activeCategory, setActiveCategory] = useState('All');
@@ -78,7 +66,6 @@ export function OrderPage() {
   const [cartOpen, setCartOpen] = useState(false);
   const [payingOrder, setPayingOrder] = useState<any | null>(null);
 
-  const token = session?.token || '';
   const rooms: Array<{ roomNo: string; type?: string }> = session?.guest?.rooms || [];
   const canOrder = Boolean(session?.canOrder);
 
@@ -94,53 +81,43 @@ export function OrderPage() {
       .catch(() => {});
   }, []);
 
+  const openDiningSession = useCallback(async (bookingNumber?: string) => {
+    const res = await api<any>('/public/restaurant/session', {
+      method: 'POST',
+      body: bookingNumber ? { bookingNumber } : {},
+    });
+    setSession(res);
+    const firstRoom = res?.guest?.rooms?.[0]?.roomNo || '';
+    if (res?.guest?.rooms?.length === 1) setRoomNo(firstRoom);
+    return res;
+  }, []);
+
   const loadOrders = useCallback(async () => {
-    if (!token) return;
+    if (!session) return;
     try {
-      const list = await api<any[]>('/public/restaurant/orders', { token });
+      const list = await api<any[]>('/public/restaurant/orders');
       setOrders(list);
     } catch (err: any) {
-      if (/expired|ended|open|book/i.test(err.message || '')) {
-        sessionStorage.removeItem(SESSION_KEY);
+      if (/expired|ended|open|book|verify|passcode/i.test(err.message || '')) {
         setSession(null);
       }
     }
-  }, [token]);
+  }, [session]);
 
   useEffect(() => {
     loadMenu();
-  }, [loadMenu]);
+    openDiningSession().catch(() => {});
+  }, [loadMenu, openDiningSession]);
 
   useEffect(() => {
-    if (!token) return;
+    if (!session) return;
     loadOrders();
     const timer = window.setInterval(loadOrders, 15000);
     return () => window.clearInterval(timer);
-  }, [token, loadOrders]);
+  }, [session, loadOrders]);
 
-  async function handleSignIn(e: React.FormEvent) {
-    e.preventDefault();
-    setAuthBusy(true);
-    setAuthError('');
-    try {
-      const res = await api<any>('/public/restaurant/session', {
-        method: 'POST',
-        body: { bookingNumber: bookingNumber.trim().toUpperCase(), phone: phone.trim() },
-      });
-      sessionStorage.setItem(SESSION_KEY, JSON.stringify(res));
-      setSession(res);
-      const firstRoom = res?.guest?.rooms?.[0]?.roomNo || '';
-      if (res?.guest?.rooms?.length === 1) setRoomNo(firstRoom);
-      toast.success(`Signed in for ${res?.guest?.name || bookingNumber}`);
-    } catch (err: any) {
-      setAuthError(err.message || 'Could not open dining session');
-    } finally {
-      setAuthBusy(false);
-    }
-  }
-
-  function signOut() {
-    sessionStorage.removeItem(SESSION_KEY);
+  async function signOut() {
+    await api('/public/guest/logout', { method: 'POST' }).catch(() => {});
     setSession(null);
     setOrders([]);
     setRoomNo('');
@@ -189,7 +166,6 @@ export function OrderPage() {
     try {
       const created = await api<any>('/public/restaurant/orders', {
         method: 'POST',
-        token,
         body: {
           type: orderType,
           paymentMode,
@@ -221,7 +197,7 @@ export function OrderPage() {
 
   async function cancelOrder(id: string | number) {
     try {
-      await api(`/public/restaurant/orders/${id}/cancel`, { method: 'POST', token });
+      await api(`/public/restaurant/orders/${id}/cancel`, { method: 'POST' });
       toast.success('Order cancelled');
       await loadOrders();
     } catch (err: any) {
@@ -396,20 +372,17 @@ export function OrderPage() {
 
             <Card>
               <CardContent className="p-6">
-                <form onSubmit={handleSignIn} className="space-y-4">
-                  <div className="space-y-1.5">
-                    <Label>Booking Number</Label>
-                    <Input required value={bookingNumber} onChange={(e) => setBookingNumber(e.target.value)} placeholder="OAS-..." />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label>Phone on Reservation</Label>
-                    <Input required type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="03XX-XXXXXXX" />
-                  </div>
-                  {authError && <Alert severity="error">{authError}</Alert>}
-                  <Button type="submit" variant="accent" className="w-full" disabled={authBusy}>
-                    {authBusy ? 'Verifying Stay…' : 'Open Dining Menu'}
-                  </Button>
-                </form>
+                <GuestOtpGate
+                  ctaLabel="Open Dining Menu"
+                  onVerified={async (res) => {
+                    try {
+                      await openDiningSession(res.bookingNumber);
+                      toast.success(`Signed in for ${res.guestName}`);
+                    } catch (err: any) {
+                      toast.error(err.message || 'This booking is not open for ordering yet');
+                    }
+                  }}
+                />
               </CardContent>
             </Card>
 
@@ -610,7 +583,6 @@ export function OrderPage() {
                 submit={(f) =>
                   api(`/public/restaurant/orders/${payingOrder.id || payingOrder._id}/payment-claim`, {
                     method: 'POST',
-                    token,
                     body: f,
                   })
                 }

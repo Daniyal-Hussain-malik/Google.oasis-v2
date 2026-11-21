@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Copy, Check, Building2, Smartphone } from 'lucide-react';
+import { Copy, Check, Building2, Smartphone, Upload, Image as ImageIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import { Alert } from '@mui/material';
 import { Card, CardContent, CardHeader, CardTitle } from '@/src/components/ui/card';
@@ -7,7 +7,7 @@ import { Button } from '@/src/components/ui/button';
 import { Input } from '@/src/components/ui/input';
 import { Label } from '@/src/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/src/components/ui/select';
-import { api, pkr } from '@/src/lib/api';
+import { api, guestUploadPaymentProof, media, pkr } from '@/src/lib/api';
 
 interface PaymentInfo {
   instructions?: string;
@@ -128,11 +128,20 @@ export function PaymentProofForm({
   submit,
   defaultAmount = '',
   needPhone = false,
+  allowReceiptUpload = true,
   onSent,
 }: {
-  submit: (payload: { method: string; amount: number; reference: string; senderName: string; phone: string }) => Promise<unknown>;
+  submit: (payload: {
+    method: string;
+    amount: number;
+    reference: string;
+    senderName: string;
+    phone: string;
+    proofImageUrl?: string;
+  }) => Promise<unknown>;
   defaultAmount?: number | string;
   needPhone?: boolean;
+  allowReceiptUpload?: boolean;
   onSent?: () => void;
 }) {
   const payments = useResortPayments();
@@ -141,6 +150,8 @@ export function PaymentProofForm({
   const [reference, setReference] = useState('');
   const [senderName, setSenderName] = useState('');
   const [phone, setPhone] = useState('');
+  const [proofImageUrl, setProofImageUrl] = useState('');
+  const [uploading, setUploading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [sent, setSent] = useState(false);
@@ -166,6 +177,22 @@ export function PaymentProofForm({
     );
   }
 
+  async function handleReceiptUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    setError('');
+    try {
+      const uploaded = await guestUploadPaymentProof(file);
+      setProofImageUrl(uploaded.url);
+      toast.success('Receipt screenshot uploaded to secure storage');
+    } catch (err: any) {
+      setError(err.message || 'Could not upload receipt screenshot');
+    } finally {
+      setUploading(false);
+    }
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
@@ -177,6 +204,7 @@ export function PaymentProofForm({
         reference: reference.trim(),
         senderName: senderName.trim(),
         phone: phone.trim(),
+        ...(proofImageUrl ? { proofImageUrl } : {}),
       });
       setSent(true);
       toast.success('Payment proof submitted for desk verification');
@@ -192,7 +220,7 @@ export function PaymentProofForm({
     <form onSubmit={handleSubmit} className="space-y-4 rounded-xl border border-dashed border-border bg-secondary/25 p-5">
       <div>
         <p className="text-sm font-semibold text-foreground">Submit Payment Proof</p>
-        <p className="text-xs text-muted-foreground">Already sent the transfer? Enter your Transaction ID (TID) so the desk can verify it.</p>
+        <p className="text-xs text-muted-foreground">Already sent the transfer? Enter your Transaction ID (TID) and optionally attach your receipt screenshot.</p>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2">
@@ -259,11 +287,43 @@ export function PaymentProofForm({
             />
           </div>
         )}
+
+        {allowReceiptUpload && (
+          <div className="space-y-1.5 sm:col-span-2">
+            <Label className="flex items-center gap-1.5">
+              <ImageIcon className="h-3.5 w-3.5 text-muted-foreground" />
+              Receipt Screenshot (Optional, PNG/JPG/WebP)
+            </Label>
+            <div className="flex flex-wrap items-center gap-3">
+              <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-border bg-background px-3 py-1.5 text-xs font-medium hover:bg-secondary/60">
+                <Upload className="h-3.5 w-3.5" />
+                {uploading ? 'Uploading…' : proofImageUrl ? 'Replace Screenshot' : 'Upload Receipt'}
+                <input
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp,image/avif"
+                  className="hidden"
+                  disabled={uploading}
+                  onChange={handleReceiptUpload}
+                />
+              </label>
+              {proofImageUrl && (
+                <a
+                  href={media(proofImageUrl)}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-xs font-medium text-accent underline"
+                >
+                  Receipt uploaded (preview)
+                </a>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       {error && <Alert severity="error">{error}</Alert>}
 
-      <Button type="submit" variant="accent" disabled={busy}>
+      <Button type="submit" variant="accent" disabled={busy || uploading}>
         {busy ? 'Sending…' : 'Submit Transaction ID'}
       </Button>
     </form>

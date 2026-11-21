@@ -4,6 +4,7 @@ import { Alert } from '@mui/material';
 import { ArrowLeft, BadgeCheck, PenLine, Search } from 'lucide-react';
 import { toast } from 'sonner';
 import { GuestLayout } from '@/src/components/guest/GuestLayout';
+import { GuestOtpGate } from '@/src/components/guest/GuestOtpGate';
 import { InfoHoverCard, ShowcaseHoverCard } from '@/src/components/guest/InteractiveHoverCard';
 import { EnquiryForm } from '@/src/components/guest/EnquiryForm';
 import { ResilientImage } from '@/src/components/guest/ResilientImage';
@@ -242,8 +243,7 @@ const BLOG_STATUS_TEXT: Record<string, string> = {
 };
 
 function GuestJournalComposer() {
-  const [bookingNumber, setBookingNumber] = useState('');
-  const [phone, setPhone] = useState('');
+  const [verifiedBooking, setVerifiedBooking] = useState<any>(null);
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
   const [busy, setBusy] = useState(false);
@@ -251,17 +251,24 @@ function GuestJournalComposer() {
   const [err, setErr] = useState('');
   const [mine, setMine] = useState<{ posts: any[]; canWrite?: boolean } | null>(null);
 
-  const credentials = () => ({ bookingNumber: bookingNumber.trim().toUpperCase(), phone: phone.trim() });
+  useEffect(() => {
+    api<{ authenticated: boolean; reservation?: any }>('/public/guest/session')
+      .then((res) => {
+        if (res.authenticated && res.reservation) setVerifiedBooking(res.reservation);
+      })
+      .catch(() => {});
+  }, []);
 
   async function submitPost(e: React.FormEvent) {
     e.preventDefault();
+    if (!verifiedBooking) return;
     setBusy(true);
     setErr('');
     setMsg('');
     try {
       await api('/public/blog/submit', {
         method: 'POST',
-        body: { ...credentials(), title: title.trim(), body: body.trim() },
+        body: { bookingNumber: verifiedBooking.bookingNumber, title: title.trim(), body: body.trim() },
       });
       setTitle('');
       setBody('');
@@ -269,7 +276,7 @@ function GuestJournalComposer() {
       toast.success('Journal story submitted');
       const statusRes = await api<{ posts: any[]; canWrite?: boolean }>('/public/blog/mine', {
         method: 'POST',
-        body: credentials(),
+        body: { bookingNumber: verifiedBooking.bookingNumber },
       }).catch(() => null);
       if (statusRes) setMine(statusRes);
     } catch (reason: any) {
@@ -280,12 +287,13 @@ function GuestJournalComposer() {
   }
 
   async function checkMyPosts() {
+    if (!verifiedBooking) return;
     setBusy(true);
     setErr('');
     try {
       const res = await api<{ posts: any[]; canWrite?: boolean }>('/public/blog/mine', {
         method: 'POST',
-        body: credentials(),
+        body: { bookingNumber: verifiedBooking.bookingNumber },
       });
       setMine(res);
     } catch (reason: any) {
@@ -304,60 +312,70 @@ function GuestJournalComposer() {
           Share your story
         </CardTitle>
         <CardDescription>
-          Tell other travellers what the stay was like: the view, the food, the evening on the sand. Anyone who has checked out can write using their booking number and phone.
+          Tell other travellers what the stay was like: the view, the food, the evening on the sand. Verified checked-out guests can write after OTP confirmation.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         <ul className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-3 border-b border-border pb-4">
-          <li>· Use the booking number and phone from your stay.</li>
+          <li>· Verify your stay via WhatsApp, Email, or SMS OTP.</li>
           <li>· Your first name and initial are shown, never phone or email.</li>
           <li>· Please keep it to your own experience, without links.</li>
         </ul>
 
-        <form onSubmit={submitPost} className="space-y-4">
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-1.5">
-              <Label>Booking Number</Label>
-              <Input required value={bookingNumber} onChange={(e) => setBookingNumber(e.target.value)} placeholder="OAS-..." />
+        {!verifiedBooking ? (
+          <GuestOtpGate
+            ctaLabel="Verify & Write Story"
+            showSavedShortcuts={false}
+            onVerified={(res) => setVerifiedBooking(res)}
+          />
+        ) : (
+          <form onSubmit={submitPost} className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-secondary/40 px-3 py-2 text-xs">
+              <span>
+                Verified stay: <span className="font-mono font-semibold text-accent">{verifiedBooking.bookingNumber}</span> ({verifiedBooking.guestName})
+              </span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  api('/public/guest/logout', { method: 'POST' }).catch(() => {});
+                  setVerifiedBooking(null);
+                  setMine(null);
+                }}
+              >
+                Switch booking
+              </Button>
             </div>
             <div className="space-y-1.5">
-              <Label>Phone on the Booking</Label>
-              <Input required type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="03XX-XXXXXXX" />
+              <Label>Title</Label>
+              <Input required minLength={5} maxLength={120} value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Sunrise over the frozen dune" />
             </div>
-          </div>
-          <div className="space-y-1.5">
-            <Label>Title</Label>
-            <Input required minLength={5} maxLength={120} value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Sunrise over the frozen dune" />
-          </div>
-          <div className="space-y-1.5">
-            <Label>Your Story ({body.length}/6000)</Label>
-            <Textarea
-              required
-              minLength={100}
-              maxLength={6000}
-              rows={5}
-              value={body}
-              onChange={(e) => setBody(e.target.value)}
-              placeholder="At least a few sentences about your stay…"
-            />
-          </div>
-          {err && <Alert severity="error">{err}</Alert>}
-          {msg && <Alert severity="success">{msg}</Alert>}
-          <div className="flex flex-wrap items-center gap-3">
-            <Button type="submit" variant="accent" disabled={busy}>
-              {busy ? 'Sending…' : 'Send my story'}
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              disabled={busy || !bookingNumber.trim() || !phone.trim()}
-              onClick={checkMyPosts}
-            >
-              <Search className="h-4 w-4" />
-              Check my posts
-            </Button>
-          </div>
-        </form>
+            <div className="space-y-1.5">
+              <Label>Your Story ({body.length}/6000)</Label>
+              <Textarea
+                required
+                minLength={100}
+                maxLength={6000}
+                rows={5}
+                value={body}
+                onChange={(e) => setBody(e.target.value)}
+                placeholder="At least a few sentences about your stay…"
+              />
+            </div>
+            {err && <Alert severity="error">{err}</Alert>}
+            {msg && <Alert severity="success">{msg}</Alert>}
+            <div className="flex flex-wrap items-center gap-3">
+              <Button type="submit" variant="accent" disabled={busy}>
+                {busy ? 'Sending…' : 'Send my story'}
+              </Button>
+              <Button type="button" variant="outline" disabled={busy} onClick={checkMyPosts}>
+                <Search className="h-4 w-4" />
+                Check my posts
+              </Button>
+            </div>
+          </form>
+        )}
 
         {mine && (
           <div className="rounded-lg border border-border bg-secondary/30 p-4 text-sm space-y-2">

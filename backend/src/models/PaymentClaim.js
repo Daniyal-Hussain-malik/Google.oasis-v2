@@ -16,6 +16,7 @@ PaymentClaim.setup(
     amount: money(1, { validate: { min: 1 } }),
     reference: text({ len: 80, required: true }),
     senderName: text({ len: 80 }),
+    proofImageUrl: text({ len: 500 }),
     status: enumCol(['pending', 'confirmed', 'rejected'], 'pending'),
     rejectReason: text({ len: 400 }),
     reviewedBy: fk('users'),

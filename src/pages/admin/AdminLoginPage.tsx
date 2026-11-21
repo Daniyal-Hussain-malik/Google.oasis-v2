@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Alert } from '@mui/material';
-import { ArrowLeft, ShieldCheck } from 'lucide-react';
+import { ArrowLeft, KeyRound, ShieldCheck } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/src/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/src/components/ui/card';
@@ -11,15 +11,12 @@ import { useAdminAuth } from '@/src/context/AdminAuthContext';
 import { api } from '@/src/lib/api';
 import { BrandLogo } from '@/src/components/BrandLogo';
 
-const DEMO_ACCOUNTS = [
-  { label: 'Super Admin', email: 'admin@oasisresort.pk', password: 'ChangeMe123!' },
-  { label: 'Front Desk', email: 'desk@oasisresort.pk', password: 'DeskPassword123!' },
-  { label: 'Kitchen Chef', email: 'chef@oasisresort.pk', password: 'ChefPassword123!' },
-];
-
 export function AdminLoginPage() {
-  const { login } = useAdminAuth();
+  const { login, claimInitialAdmin } = useAdminAuth();
   const navigate = useNavigate();
+
+  const [needsSetup, setNeedsSetup] = useState(false);
+  const [setupName, setSetupName] = useState('');
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -29,6 +26,12 @@ export function AdminLoginPage() {
   const [forgotMode, setForgotMode] = useState(false);
   const [forgotEmail, setForgotEmail] = useState('');
   const [forgotSent, setForgotSent] = useState(false);
+
+  useEffect(() => {
+    api<{ needsSetup: boolean }>('/auth/setup-status')
+      .then((res) => setNeedsSetup(Boolean(res?.needsSetup)))
+      .catch(() => setNeedsSetup(false));
+  }, []);
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
@@ -41,6 +44,21 @@ export function AdminLoginPage() {
       else navigate('/admin');
     } catch (err: any) {
       setError(err.message || 'Invalid credentials');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleSetupAdmin(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError('');
+    try {
+      const user = await claimInitialAdmin(setupName.trim(), email.trim(), password);
+      toast.success(`Super Admin account created for ${user.name}`);
+      navigate('/admin');
+    } catch (err: any) {
+      setError(err.message || 'Could not initialize administrator account');
     } finally {
       setBusy(false);
     }
@@ -79,16 +97,61 @@ export function AdminLoginPage() {
               <span className="text-xs font-semibold uppercase tracking-wider">Oasis Operations Desk</span>
             </div>
             <CardTitle className="font-display text-3xl font-semibold">
-              {forgotMode ? 'Reset Staff Password' : 'Staff Sign In'}
+              {needsSetup
+                ? 'Initialize Super Admin'
+                : forgotMode
+                  ? 'Reset Staff Password'
+                  : 'Staff Sign In'}
             </CardTitle>
             <CardDescription>
-              {forgotMode
-                ? 'Enter your staff email to request a password reset token.'
-                : 'Sign in with your assigned resort role credentials.'}
+              {needsSetup
+                ? 'No staff accounts exist yet. Create the primary Super Admin account to lock setup.'
+                : forgotMode
+                  ? 'Enter your staff email to request a password reset token.'
+                  : 'Sign in with your assigned resort role credentials.'}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-5">
-            {forgotMode ? (
+            {needsSetup ? (
+              <form onSubmit={handleSetupAdmin} className="space-y-4">
+                <div className="space-y-1.5">
+                  <Label>Full Name</Label>
+                  <Input
+                    required
+                    minLength={2}
+                    value={setupName}
+                    onChange={(e) => setSetupName(e.target.value)}
+                    placeholder="e.g. Kashif Hassan"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Admin Email</Label>
+                  <Input
+                    type="email"
+                    required
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="admin@oasisresort.pk"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Password (min 8 chars, mixed characters)</Label>
+                  <Input
+                    type="password"
+                    required
+                    minLength={8}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="••••••••••••"
+                  />
+                </div>
+                {error && <Alert severity="error">{error}</Alert>}
+                <Button type="submit" variant="accent" className="w-full" disabled={busy}>
+                  <KeyRound className="h-4 w-4" />
+                  {busy ? 'Creating Account…' : 'Create Super Admin'}
+                </Button>
+              </form>
+            ) : forgotMode ? (
               <form onSubmit={handleForgot} className="space-y-4">
                 <div className="space-y-1.5">
                   <Label>Staff Email</Label>
@@ -121,9 +184,10 @@ export function AdminLoginPage() {
                     <Input
                       type="email"
                       required
+                      autoComplete="email"
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
-                      placeholder="admin@oasisresort.pk"
+                      placeholder="staff@oasisresort.pk"
                     />
                   </div>
                   <div className="space-y-1.5">
@@ -131,6 +195,7 @@ export function AdminLoginPage() {
                     <Input
                       type="password"
                       required
+                      autoComplete="current-password"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
                       placeholder="••••••••"
@@ -141,27 +206,6 @@ export function AdminLoginPage() {
                     {busy ? 'Signing in…' : 'Sign In'}
                   </Button>
                 </form>
-
-                <div className="border-t border-border pt-4 space-y-2">
-                  <p className="text-xs font-medium text-muted-foreground">Quick Role Sign-In (Demo Credentials)</p>
-                  <div className="grid grid-cols-3 gap-2">
-                    {DEMO_ACCOUNTS.map((acc) => (
-                      <Button
-                        key={acc.email}
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="text-xs"
-                        onClick={() => {
-                          setEmail(acc.email);
-                          setPassword(acc.password);
-                        }}
-                      >
-                        {acc.label}
-                      </Button>
-                    ))}
-                  </div>
-                </div>
 
                 <div className="text-center">
                   <button

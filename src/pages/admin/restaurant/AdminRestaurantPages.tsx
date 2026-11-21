@@ -35,7 +35,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Tabs, TabsList, TabsTrigger } from '@/src/components/ui/tabs';
 import { Textarea } from '@/src/components/ui/textarea';
 import { SUPER, useAdminAuth } from '@/src/context/AdminAuthContext';
-import { adminApi, adminUploadImage, API, getAdminToken, media, pkr, pretty, todayISO, addDays } from '@/src/lib/api';
+import { adminApi, adminUploadImage, API, media, pkr, pretty, todayISO, addDays } from '@/src/lib/api';
 
 function playKitchenChime() {
   try {
@@ -1830,8 +1830,7 @@ export function RestaurantKitchenPage() {
 
   useEffect(() => {
     load();
-    const token = getAdminToken();
-    const source = new EventSource(`${API}/admin/restaurant/stream?token=${encodeURIComponent(token)}`);
+    const source = new EventSource(`${API}/admin/restaurant/stream`, { withCredentials: true });
     source.onopen = () => setLive(true);
     source.onmessage = () => load();
     source.onerror = () => setLive(false);

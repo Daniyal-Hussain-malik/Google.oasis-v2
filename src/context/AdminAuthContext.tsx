@@ -1,5 +1,5 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import { adminApi, getAdminToken, setAdminToken } from '@/src/lib/api';
+import { adminApi } from '@/src/lib/api';
 
 export type StaffRole = 'super_admin' | 'frontdesk' | 'chef';
 
@@ -24,7 +24,8 @@ interface AdminAuthValue {
   user: StaffUser | null;
   ready: boolean;
   login: (email: string, password: string) => Promise<StaffUser>;
-  logout: () => void;
+  claimInitialAdmin: (name: string, email: string, password: string) => Promise<StaffUser>;
+  logout: () => Promise<void>;
   can: (...roles: StaffRole[]) => boolean;
   refresh: () => Promise<void>;
 }
@@ -35,7 +36,10 @@ const AdminAuthContext = createContext<AdminAuthValue>({
   login: async () => {
     throw new Error('Not initialized');
   },
-  logout: () => {},
+  claimInitialAdmin: async () => {
+    throw new Error('Not initialized');
+  },
+  logout: async () => {},
   can: () => false,
   refresh: async () => {},
 });
@@ -45,17 +49,10 @@ export function AdminAuthProvider({ children }: { children: React.ReactNode }) {
   const [ready, setReady] = useState(false);
 
   const refresh = useCallback(async () => {
-    const token = getAdminToken();
-    if (!token) {
-      setUser(null);
-      setReady(true);
-      return;
-    }
     try {
       const me = await adminApi<StaffUser>('/auth/me');
       setUser(me);
     } catch {
-      setAdminToken(null);
       setUser(null);
     } finally {
       setReady(true);
@@ -67,18 +64,31 @@ export function AdminAuthProvider({ children }: { children: React.ReactNode }) {
   }, [refresh]);
 
   const login = useCallback(async (email: string, password: string) => {
-    const res = await adminApi<{ token: string; user: StaffUser }>('/auth/login', {
+    const res = await adminApi<{ ok: boolean; user: StaffUser }>('/auth/login', {
       method: 'POST',
       body: { email, password },
     });
-    setAdminToken(res.token);
     setUser(res.user);
     return res.user;
   }, []);
 
-  const logout = useCallback(() => {
-    setAdminToken(null);
-    setUser(null);
+  const claimInitialAdmin = useCallback(async (name: string, email: string, password: string) => {
+    const res = await adminApi<{ ok: boolean; user: StaffUser }>('/auth/setup-admin', {
+      method: 'POST',
+      body: { name, email, password },
+    });
+    setUser(res.user);
+    return res.user;
+  }, []);
+
+  const logout = useCallback(async () => {
+    try {
+      await adminApi('/auth/logout', { method: 'POST' });
+    } catch {
+      /* ignore network issues on logout */
+    } finally {
+      setUser(null);
+    }
   }, []);
 
   const can = useCallback(
@@ -90,8 +100,8 @@ export function AdminAuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   const value = useMemo(
-    () => ({ user, ready, login, logout, can, refresh }),
-    [user, ready, login, logout, can, refresh],
+    () => ({ user, ready, login, claimInitialAdmin, logout, can, refresh }),
+    [user, ready, login, claimInitialAdmin, logout, can, refresh],
   );
 
   return <AdminAuthContext.Provider value={value}>{children}</AdminAuthContext.Provider>;

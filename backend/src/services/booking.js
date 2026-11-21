@@ -1,4 +1,5 @@
 import { Op } from 'sequelize';
+import { lockForUpdate, tx } from '../config/db.js';
 import { toId } from '../models/_base.js';
 import { nextSequence } from '../models/Counter.js';
 import Reservation from '../models/Reservation.js';
@@ -10,6 +11,7 @@ import { badRequest, conflict, int } from '../utils/http.js';
 import { isDuplicate } from '../utils/sql.js';
 import { quoteStay } from './pricing.js';
 import { settleForCheckout } from './restaurant.js';
+import { scheduleAriPush } from './channelManager.js';
 
 // Checks the dates and party size of a stay and returns them normalised.
 // `today` is the hotel's business date; staff may pass allowPast to enter a
@@ -41,12 +43,30 @@ export function fits(roomType, { adults, children, rooms }) {
 }
 
 // Rooms of each type with no sold night inside the stay.
-async function freeRoomsByType(nights, roomTypeIds) {
+// When `lock` is true inside a transaction, locks candidate Room rows in
+// deterministic `id ASC` order (SELECT ... FOR UPDATE on MySQL/Postgres) and
+// locks matching RoomNight rows before filtering out taken rooms.
+async function freeRoomsByType(nights, roomTypeIds, { transaction, lock = false } = {}) {
   const where = { status: 'active' };
   if (roomTypeIds) where.roomType = roomTypeIds;
-  const rooms = await Room.findAll({ where, order: [['roomNo', 'ASC']] });
+  const lockOpts = lock ? lockForUpdate(transaction) : {};
+  const rooms = await Room.findAll({
+    where,
+    order: lock ? [['id', 'ASC']] : [['roomNo', 'ASC']],
+    transaction,
+    ...lockOpts,
+  });
+  if (lock) {
+    rooms.sort((a, b) => (a.roomNo < b.roomNo ? -1 : a.roomNo > b.roomNo ? 1 : a.id - b.id));
+  }
   const taken = rooms.length
-    ? await RoomNight.findAll({ attributes: ['room'], where: { room: rooms.map((room) => room.id), date: nights }, group: ['room'], raw: true })
+    ? await RoomNight.findAll({
+        attributes: ['room'],
+        where: { room: rooms.map((room) => room.id), date: nights },
+        transaction,
+        ...lockOpts,
+        raw: true,
+      })
     : [];
   const takenIds = new Set(taken.map((row) => String(row.room)));
   const free = new Map();
@@ -74,31 +94,34 @@ export async function availability(stay) {
   });
 }
 
-async function nextBookingNumber(checkIn) {
+async function nextBookingNumber(checkIn, transaction) {
   const year = checkIn.slice(2, 4);
-  const seq = await nextSequence(`booking-${year}`);
+  const seq = await nextSequence(`booking-${year}`, transaction);
   return `OAS${year}${String(seq).padStart(4, '0')}`;
 }
 
-export function releaseNights(reservationId, fromDate) {
+export function releaseNights(reservationId, fromDate, transaction) {
   const where = { reservation: reservationId };
   if (fromDate) where.date = { [Op.gte]: fromDate };
-  return RoomNight.destroy({ where });
+  return RoomNight.destroy({ where, transaction });
 }
 
-// Claims specific rooms night by night. If another booking wins a race for a
-// room, the unique key on (room, date) rejects the insert and we move on to the
-// next free room of the same type.
-async function claimRooms(reservationId, candidates, nights, needed) {
+// Claims specific rooms night by night inside the active transaction.
+// Row-level locks (SELECT ... FOR UPDATE) prevent concurrent bookings from
+// picking the same room; the unique (room, date) index enforces it at DB level.
+async function claimRooms(reservationId, candidates, nights, needed, transaction) {
   const claimed = [];
   for (const room of candidates) {
     if (claimed.length === needed) break;
     try {
-      await RoomNight.bulkCreate(nights.map((date) => ({ room: room.id, date, reservation: reservationId })));
+      await RoomNight.bulkCreate(
+        nights.map((date) => ({ room: room.id, date, reservation: reservationId })),
+        { transaction },
+      );
       claimed.push(room);
     } catch (error) {
       if (!isDuplicate(error)) throw error;
-      await RoomNight.destroy({ where: { reservation: reservationId, room: room.id } });
+      await RoomNight.destroy({ where: { reservation: reservationId, room: room.id }, transaction });
     }
   }
   return claimed;
@@ -112,47 +135,52 @@ export async function createReservation({ stay, roomTypeId, guest, specialReques
   }
 
   const nights = stayNights(stay.checkIn, stay.checkOut);
-  const free = (await freeRoomsByType(nights, [roomType.id])).get(String(roomType.id)) || [];
-  if (free.length < stay.rooms) throw conflict('Nothing left in this category for those dates.');
-
   const quote = quoteStay(roomType, stay.checkIn, stay.checkOut, stay.rooms);
-  const reservation = Reservation.make({
-    bookingNumber: await nextBookingNumber(stay.checkIn),
-    source,
-    guest,
-    specialRequests,
-    offer,
-    checkIn: stay.checkIn,
-    checkOut: stay.checkOut,
-    nights: stay.nights,
-    adults: stay.adults,
-    children: stay.children,
-    roomType: roomType.id,
-    breakdown: quote.breakdown,
-    totalAmount: quote.total,
-    paymentChoice,
-    history: [{ status: 'confirmed', note: `Booked via ${source}`, by }],
-    // The card never reaches this server. A website "pay first night" choice is
-    // recorded as a demo payment of the first night's amount.
-    payments: paymentChoice === 'online_demo'
-      ? [{ amount: quote.breakdown[0].rate, method: 'online_demo', reference: 'website-demo', note: 'First night, paid online (demo)' }]
-      : [],
-  });
-  // The booking row comes first: the nights point at it with a foreign key.
-  await reservation.save();
 
-  try {
-    const claimed = await claimRooms(reservation.id, free, nights, stay.rooms);
+  const reservation = await tx(async (transaction) => {
+    const free = (await freeRoomsByType(nights, [roomType.id], { transaction, lock: true })).get(String(roomType.id)) || [];
+    if (free.length < stay.rooms) throw conflict('Nothing left in this category for those dates.');
+
+    const resv = Reservation.make({
+      bookingNumber: await nextBookingNumber(stay.checkIn, transaction),
+      source,
+      guest,
+      specialRequests,
+      offer,
+      checkIn: stay.checkIn,
+      checkOut: stay.checkOut,
+      nights: stay.nights,
+      adults: stay.adults,
+      children: stay.children,
+      roomType: roomType.id,
+      breakdown: quote.breakdown,
+      totalAmount: quote.total,
+      paymentChoice,
+      history: [{ status: 'confirmed', note: `Booked via ${source}`, by }],
+      // The card never reaches this server. A website "pay first night" choice is
+      // recorded as a demo payment of the first night's amount.
+      payments: paymentChoice === 'online_demo'
+        ? [{ amount: quote.breakdown[0].rate, method: 'online_demo', reference: 'website-demo', note: 'First night, paid online (demo)' }]
+        : [],
+    });
+    // The booking row comes first: the nights point at it with a foreign key.
+    await resv.save({ transaction });
+
+    const claimed = await claimRooms(resv.id, free, nights, stay.rooms, transaction);
     if (claimed.length < stay.rooms) {
-      await Reservation.destroy({ where: { id: reservation.id } });
       throw conflict('Those rooms were just taken. Please choose again.');
     }
-    reservation.rooms = claimed.map((room) => ({ room: room.id, roomNo: room.roomNo, type: roomType.name }));
-    await reservation.save();
-  } catch (error) {
-    await Reservation.destroy({ where: { id: reservation.id } });
-    throw error;
-  }
+    resv.rooms = claimed.map((room) => ({ room: room.id, roomNo: room.roomNo, type: roomType.name }));
+    await resv.save({ transaction });
+    return resv;
+  });
+
+  scheduleAriPush({
+    roomTypeIds: [roomType.id],
+    fromDate: stay.checkIn,
+    days: Math.max(stay.nights + 2, 14),
+    reason: `reservation_created:${source}`,
+  });
   return reservation;
 }
 
@@ -174,13 +202,33 @@ export async function changeStatus(reservation, status, { note = '', by, today }
   // Restaurant orders still in the kitchen block checkout; served orders that
   // were not paid are put on the final bill first.
   if (status === 'checked_out') await settleForCheckout(reservation, by);
-  reservation.status = status;
-  reservation.history.push({ status, note, by });
 
-  if (status === 'cancelled' || status === 'no_show') await releaseNights(reservation.id);
-  // Leaving early frees the nights that were not used.
-  if (status === 'checked_out' && today && today < reservation.checkOut) await releaseNights(reservation.id, today);
+  await tx(async (transaction) => {
+    const current = await Reservation.findByPk(reservation.id, {
+      transaction,
+      ...lockForUpdate(transaction),
+    });
+    if (!current || !transitions[current.status]?.includes(status)) {
+      throw badRequest(`A ${(current?.status || reservation.status).replace('_', ' ')} booking cannot be marked ${status.replace('_', ' ')}.`);
+    }
 
-  await reservation.save();
+    reservation.status = status;
+    reservation.history.push({ status, note, by });
+
+    if (status === 'cancelled' || status === 'no_show') await releaseNights(reservation.id, undefined, transaction);
+    // Leaving early frees the nights that were not used.
+    if (status === 'checked_out' && today && today < reservation.checkOut) await releaseNights(reservation.id, today, transaction);
+
+    await reservation.save({ transaction });
+  });
+
+  if (status === 'cancelled' || status === 'no_show' || (status === 'checked_out' && today && today < reservation.checkOut)) {
+    scheduleAriPush({
+      roomTypeIds: [reservation.roomType],
+      fromDate: reservation.checkIn,
+      days: Math.max(Number(reservation.nights || 1) + 2, 14),
+      reason: `reservation_${status}`,
+    });
+  }
   return reservation;
 }

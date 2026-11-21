@@ -1,12 +1,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import cors from 'cors';
+import cookieParser from 'cookie-parser';
 import express from 'express';
 import { sequelize } from './config/db.js';
 import { env } from './config/env.js';
 import { errorHandler, notFoundHandler } from './middleware/error.js';
+import { createCorsMiddleware, createHelmetMiddleware, verifyCookieCsrf } from './middleware/security.js';
 import { UPLOAD_DIR } from './middleware/upload.js';
+import { createHttpLogger } from './services/logger.js';
 import admin from './routes/admin/index.js';
 import auth from './routes/auth.js';
 import blog from './routes/blog.js';
@@ -20,22 +22,20 @@ const PUBLIC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '.
 export function createApp() {
   const app = express();
   app.disable('x-powered-by');
-  // Behind Nginx, Render, Railway etc. the client IP comes from X-Forwarded-For.
-  if (process.env.TRUST_PROXY) app.set('trust proxy', Number(process.env.TRUST_PROXY) || 1);
+  // Behind Nginx, Render, Railway, Cloud Run etc. the client IP and HTTPS protocol come from X-Forwarded-*.
+  app.set('trust proxy', Number(process.env.TRUST_PROXY) || 1);
 
-  app.use(cors({
-    origin(origin, done) {
-      // Same-origin requests and tools like curl send no Origin header.
-      if (!origin || env.clientOrigins.includes(origin)) return done(null, true);
-      return done(null, false);
+  app.use(createHelmetMiddleware());
+  app.use(createCorsMiddleware());
+  app.use(createHttpLogger());
+  app.use(cookieParser());
+  app.use(express.json({
+    limit: '200kb',
+    verify: (req, _res, buf) => {
+      req.rawBody = buf.toString('utf8');
     },
   }));
-  app.use(express.json({ limit: '200kb' }));
-  app.use((req, res, next) => {
-    res.set('X-Content-Type-Options', 'nosniff');
-    res.set('Referrer-Policy', 'strict-origin-when-cross-origin');
-    next();
-  });
+  app.use(verifyCookieCsrf);
 
   fs.mkdirSync(UPLOAD_DIR, { recursive: true });
   app.use('/uploads', express.static(UPLOAD_DIR, {
@@ -43,9 +43,20 @@ export function createApp() {
     setHeaders: (res) => res.set('Cross-Origin-Resource-Policy', 'cross-origin'),
   }));
 
-  app.get('/api/health', async (req, res) => {
+  app.get('/api/health/live', (_req, res) => {
+    res.status(200).json({ ok: true, uptimeSeconds: Math.round(process.uptime()) });
+  });
+
+  app.get('/api/health', async (_req, res) => {
+    const start = Date.now();
     const db = await sequelize.authenticate().then(() => 'connected', () => 'disconnected');
-    res.status(db === 'connected' ? 200 : 503).json({ ok: db === 'connected', db });
+    res.status(db === 'connected' ? 200 : 503).json({
+      ok: db === 'connected',
+      db,
+      latencyMs: Date.now() - start,
+      uptimeSeconds: Math.round(process.uptime()),
+      timestamp: new Date().toISOString(),
+    });
   });
   // Opening the API address in a browser: say what this is instead of a 404.
   const index = async (req, res) => {

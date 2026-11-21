@@ -8,6 +8,7 @@ import RoomNight from '../../models/RoomNight.js';
 import RoomType from '../../models/RoomType.js';
 import { badRequest, conflict, notFound } from '../../utils/http.js';
 import { populate } from '../../utils/sql.js';
+import { scheduleAriPush } from '../../services/channelManager.js';
 
 const router = Router();
 const managers = requireRole(...ACCESS.superAdmin);
@@ -53,6 +54,9 @@ router.patch('/room-types/:id', managers, async (req, res) => {
   if (!type) throw notFound('Room type not found.');
   Object.assign(type, data);
   await type.save();
+  if (data.baseRate !== undefined || data.weekendRate !== undefined || data.active !== undefined) {
+    scheduleAriPush({ roomTypeIds: [type.id], reason: 'room_type_updated' });
+  }
   res.json(type);
 });
 
@@ -90,6 +94,9 @@ router.patch('/rooms/:id', async (req, res) => {
   if (!room) throw notFound('Room not found.');
   Object.assign(room, data);
   await room.save();
+  if (data.status !== undefined || data.roomType !== undefined) {
+    scheduleAriPush({ roomTypeIds: [room.roomType], reason: 'room_inventory_updated' });
+  }
   res.json(room);
 });
 

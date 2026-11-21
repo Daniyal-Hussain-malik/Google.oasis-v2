@@ -7,9 +7,19 @@ RoomNight.setup(
   {
     room: fk('rooms', { required: true, onDelete: 'CASCADE' }),
     date: { type: D.STRING(10), allowNull: false },
-    reservation: fk('reservations', { required: true, onDelete: 'CASCADE' }),
+    reservation: fk('reservations', { required: false, onDelete: 'CASCADE' }),
+    otaBlock: fk('ota_calendar_blocks', { required: false, onDelete: 'CASCADE' }),
   },
-  { table: 'room_nights', timestamps: false, indexes: [{ unique: true, fields: ['room', 'date'] }, { fields: ['date'] }, { fields: ['reservation'] }] },
+  {
+    table: 'room_nights',
+    timestamps: false,
+    indexes: [
+      { name: 'uniq_room_nights_room_date', unique: true, fields: ['room', 'date'] },
+      { fields: ['date'] },
+      { fields: ['reservation'] },
+      { fields: ['otaBlock'] },
+    ],
+  },
 );
 
 export default RoomNight;

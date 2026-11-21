@@ -1,39 +1,25 @@
 import { Router } from 'express';
-import jwt from 'jsonwebtoken';
-import { env } from '../config/env.js';
 import { formLimit } from '../middleware/limits.js';
 import { toId } from '../models/_base.js';
 import MenuItem from '../models/MenuItem.js';
-import Reservation from '../models/Reservation.js';
 import RestaurantCategory from '../models/RestaurantCategory.js';
 import RestaurantOrder from '../models/RestaurantOrder.js';
 import Settings from '../models/Settings.js';
-import { badRequest, HttpError, notFound, text } from '../utils/http.js';
+import { getVerifiedGuestReservation, requireGuestSession } from '../services/guestAuth.js';
 import { paymentProofSubmitted } from '../services/notifications.js';
 import { cancelItems, createOrder, ensureCategories } from '../services/restaurant.js';
+import { badRequest, HttpError, notFound, text } from '../utils/http.js';
 import { readClaim, saveClaim } from './paymentClaims.js';
-import { findGuestBooking } from './public.js';
 
 const router = Router();
 
-// Guests have no accounts. A booking number plus the phone on the booking
-// proves who they are; the token below then pins every request to that one
-// reservation, so nothing in a request body can point at another room.
-const secret = `${env.jwtSecret}:guest`;
-const signGuest = (reservation) => jwt.sign({ typ: 'guest', rid: String(reservation.id) }, secret, { expiresIn: '8h' });
-
+// Guests authenticate via OTP-verified httpOnly cookie (or verified Bearer guest token).
 async function requireGuest(req, res, next) {
-  const header = req.get('authorization') || '';
-  const token = header.startsWith('Bearer ') ? header.slice(7) : '';
-  if (!token) throw new HttpError(401, 'Look up your booking to order food.');
-  let payload;
-  try {
-    payload = jwt.verify(token, secret);
-  } catch {
-    throw new HttpError(401, 'Your session has ended. Look up your booking again.');
+  const reservation = await getVerifiedGuestReservation(req);
+  if (!reservation) throw new HttpError(401, 'Verify your booking with a one-time passcode to order food.');
+  if (!['confirmed', 'checked_in'].includes(reservation.status)) {
+    throw new HttpError(401, 'This booking is not open for ordering.');
   }
-  const reservation = payload.typ === 'guest' ? await Reservation.findByPk(toId(payload.rid)) : null;
-  if (!reservation || !['confirmed', 'checked_in'].includes(reservation.status)) throw new HttpError(401, 'This booking is not open for ordering.');
   req.reservation = reservation;
   next();
 }
@@ -98,10 +84,9 @@ router.get('/menu', async (req, res) => {
 });
 
 router.post('/session', formLimit, async (req, res) => {
-  const reservation = await findGuestBooking(req.body || {});
+  const reservation = await requireGuestSession(req, { expectedBookingNumber: req.body?.bookingNumber });
   if (!['confirmed', 'checked_in'].includes(reservation.status)) throw badRequest('This booking is not open for ordering.');
   res.json({
-    token: signGuest(reservation),
     guest: {
       name: reservation.guestName,
       bookingNumber: reservation.bookingNumber,

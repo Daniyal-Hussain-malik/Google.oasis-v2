@@ -1,24 +1,45 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import cookieParser from 'cookie-parser';
 import express from 'express';
-import cors from 'cors';
 import { injectSeoHtml } from './src/lib/seoData.ts';
 
-// Ensure SQLite local persistence and safe JWT secret before backend modules initialize
+// Ensure SQLite local storage default before backend modules initialize
 process.env.DB_DIALECT ||= 'sqlite';
 process.env.DB_STORAGE ||= path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'oasis.sqlite');
-process.env.JWT_SECRET ||= 'oasis-resort-skardu-local-runtime-jwt-secret-key-2026';
-process.env.ADMIN_EMAIL ||= 'admin@oasisresort.pk';
-process.env.ADMIN_PASSWORD ||= 'ChangeMe123!';
 
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = '0.0.0.0';
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 
 async function startServer() {
+  const { initBackendSentry, captureBackendException } = await import('./backend/src/services/sentry.js');
+  const { createHttpLogger, logger } = await import('./backend/src/services/logger.js');
+  const { startBackupScheduler } = await import('./backend/src/services/backup.js');
+  const { sendUptimeAlert, startUptimeWatchdog } = await import('./backend/src/services/monitoring.js');
+
+  initBackendSentry();
+
+  process.on('unhandledRejection', (reason) => {
+    logger.error({ err: reason }, 'Unhandled Promise Rejection');
+    captureBackendException(reason instanceof Error ? reason : new Error(String(reason)));
+    sendUptimeAlert({
+      key: 'unhandled_rejection',
+      severity: 'critical',
+      title: 'Unhandled Promise Rejection',
+      message: reason instanceof Error ? reason.message : String(reason),
+    }).catch(() => {});
+  });
+
+  process.on('uncaughtException', (err) => {
+    logger.fatal({ err }, 'Uncaught Exception');
+    captureBackendException(err);
+  });
+
   const { bootstrapBackend } = await import('./backend/src/bootstrap.js');
   const { errorHandler, notFoundHandler } = await import('./backend/src/middleware/error.js');
+  const { createCorsMiddleware, createHelmetMiddleware, verifyCookieCsrf } = await import('./backend/src/middleware/security.js');
   const { UPLOAD_DIR } = await import('./backend/src/middleware/upload.js');
   const { sequelize } = await import('./backend/src/config/db.js');
   const { default: adminRoutes } = await import('./backend/src/routes/admin/index.js');
@@ -29,20 +50,56 @@ async function startServer() {
   const { default: publicRoutes } = await import('./backend/src/routes/public.js');
 
   await bootstrapBackend();
-  console.log('Oasis Resort SQLite database initialized and seeded.');
+  logger.info('Oasis Resort database initialized and seeded');
+
+  startUptimeWatchdog();
+  startBackupScheduler();
+
+  // Background iCal sync every 15 minutes when enabled inbound feeds exist
+  const { syncAllIcalSources } = await import('./backend/src/services/ical.js');
+  setInterval(() => {
+    syncAllIcalSources({ onlyAuto: true }).catch((err) => {
+      logger.error({ err }, 'Background iCal auto-sync failed');
+    });
+  }, 15 * 60 * 1000).unref();
 
   const app = express();
-  app.set('trust proxy', 1);
+  app.set('trust proxy', Number(process.env.TRUST_PROXY) || 1);
   app.disable('x-powered-by');
-  app.use(cors({ origin: true, credentials: true }));
-  app.use(express.json({ limit: '1mb' }));
+  app.use(createHelmetMiddleware());
+  app.use(createCorsMiddleware());
+  app.use(createHttpLogger());
+  app.use(cookieParser());
+  app.use(
+    express.json({
+      limit: '1mb',
+      verify: (req, _res, buf) => {
+        (req as express.Request & { rawBody?: string }).rawBody = buf.toString('utf8');
+      },
+    }),
+  );
+  app.use(verifyCookieCsrf);
 
   fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-  app.use('/uploads', express.static(UPLOAD_DIR, { maxAge: '30d' }));
+  app.use('/uploads', express.static(UPLOAD_DIR, {
+    maxAge: '30d',
+    setHeaders: (res) => res.set('Cross-Origin-Resource-Policy', 'cross-origin'),
+  }));
+
+  app.get('/api/health/live', (_req, res) => {
+    res.status(200).json({ ok: true, uptimeSeconds: Math.round(process.uptime()) });
+  });
 
   app.get('/api/health', async (_req, res) => {
+    const start = Date.now();
     const db = await sequelize.authenticate().then(() => 'connected', () => 'disconnected');
-    res.status(db === 'connected' ? 200 : 503).json({ ok: db === 'connected', db });
+    res.status(db === 'connected' ? 200 : 503).json({
+      ok: db === 'connected',
+      db,
+      latencyMs: Date.now() - start,
+      uptimeSeconds: Math.round(process.uptime()),
+      timestamp: new Date().toISOString(),
+    });
   });
 
   app.use('/api/public/restaurant', guestRestaurantRoutes);

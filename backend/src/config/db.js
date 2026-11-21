@@ -1,4 +1,5 @@
-import { Sequelize } from 'sequelize';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { Sequelize, Transaction } from 'sequelize';
 import { env } from './env.js';
 import nodeSqliteDialect from './nodeSqliteDialect.js';
 
@@ -22,10 +23,38 @@ function create(overrides = {}) {
 export const sequelize = create();
 export const isSqlite = () => sequelize.getDialect() === 'sqlite';
 
-// Runs `fn(transaction)` in a transaction on MySQL. The SQLite used by the tests
-// has one connection, so there the work simply runs.
+const activeTx = new AsyncLocalStorage();
+let sqliteTxQueue = Promise.resolve();
+
+export function currentTx() {
+  return activeTx.getStore();
+}
+
+// Row-level pessimistic lock (SELECT ... FOR UPDATE) for dialects that support it
+// (MySQL / MariaDB / Postgres). SQLite relies on serialized BEGIN IMMEDIATE transactions.
+export function lockForUpdate(transaction) {
+  return !isSqlite() && transaction?.LOCK?.UPDATE ? { lock: transaction.LOCK.UPDATE } : {};
+}
+
+// Runs `fn(transaction)` inside a database transaction.
+// Re-entrant calls within the same async execution reuse the active transaction.
+// On SQLite's single shared connection, transactions are serialized in-process and
+// started with BEGIN IMMEDIATE so concurrent bookings cannot interleave or race.
 export function tx(fn) {
-  return isSqlite() ? fn(undefined) : sequelize.transaction(fn);
+  const existing = activeTx.getStore();
+  if (existing) return fn(existing);
+
+  if (!isSqlite()) {
+    return sequelize.transaction((transaction) => activeTx.run(transaction, () => fn(transaction)));
+  }
+
+  const run = sqliteTxQueue.then(() =>
+    sequelize.transaction({ type: Transaction.TYPES.IMMEDIATE }, (transaction) =>
+      activeTx.run(transaction, () => fn(transaction)),
+    ),
+  );
+  sqliteTxQueue = run.catch(() => {});
+  return run;
 }
 
 // Models are imported for their side effect of registering on `sequelize`.

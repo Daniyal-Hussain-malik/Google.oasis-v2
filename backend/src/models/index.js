@@ -17,5 +17,9 @@ import './Enquiry.js';
 import './Insight.js';
 import './Loyalty.js';
 import './Settings.js';
+import './OtaSync.js';
+import './WhatsApp.js';
+import './RefreshToken.js';
+import './GuestOtp.js';
 
 export { sequelize } from '../config/db.js';

@@ -53,7 +53,7 @@ export interface LoyaltySummary {
 interface LoyaltyPanelProps {
   loyalty: LoyaltySummary;
   bookingNumber: string;
-  phone: string;
+  phone?: string;
   onRedeemed: (payload: { booking: any; loyalty: LoyaltySummary }) => void;
 }
 
@@ -99,7 +99,7 @@ export function LoyaltyPanel({ loyalty, bookingNumber, phone, onRedeemed }: Loya
         method: 'POST',
         body: {
           bookingNumber,
-          phone,
+          ...(phone ? { phone } : {}),
           rewardKey: reward.key,
           clientRequestId: requestId,
         },

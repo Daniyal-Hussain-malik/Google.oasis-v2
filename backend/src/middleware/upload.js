@@ -1,19 +1,20 @@
-import crypto from 'node:crypto';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import multer from 'multer';
+import { UPLOAD_DIR } from '../services/storage.js';
 import { badRequest } from '../utils/http.js';
 
-export const UPLOAD_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../uploads');
+export { UPLOAD_DIR };
 
-const types = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'image/avif': '.avif' };
+const types = {
+  'image/jpeg': '.jpg',
+  'image/png': '.png',
+  'image/webp': '.webp',
+  'image/avif': '.avif',
+};
 
+// Memory storage buffers uploads directly to Cloud Object Storage (S3 / R2 / GCS)
+// without leaving stale files on ephemeral container disks.
 export const upload = multer({
-  storage: multer.diskStorage({
-    destination: UPLOAD_DIR,
-    // The extension comes from the checked MIME type, never from the client's file name.
-    filename: (req, file, done) => done(null, `${Date.now()}-${crypto.randomBytes(6).toString('hex')}${types[file.mimetype]}`),
-  }),
+  storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024, files: 1 },
   fileFilter: (req, file, done) => {
     if (types[file.mimetype]) done(null, true);

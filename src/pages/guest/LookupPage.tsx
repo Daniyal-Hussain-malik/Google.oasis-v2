@@ -1,17 +1,17 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Alert, Rating } from '@mui/material';
-import { BookmarkCheck, Search } from 'lucide-react';
+import { LogOut } from 'lucide-react';
 import { toast } from 'sonner';
 import { GuestLayout } from '@/src/components/guest/GuestLayout';
+import { GuestOtpGate } from '@/src/components/guest/GuestOtpGate';
 import { PaymentAccounts, PaymentProofForm } from '@/src/components/guest/PaymentSection';
 import { Button } from '@/src/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/src/components/ui/card';
-import { Input } from '@/src/components/ui/input';
 import { Label } from '@/src/components/ui/label';
-import { Textarea } from '@/src/components/ui/textarea';
 import { Separator } from '@/src/components/ui/separator';
-import { api, getSavedBookings, pkr, pretty } from '@/src/lib/api';
+import { Textarea } from '@/src/components/ui/textarea';
+import { api, pkr, pretty } from '@/src/lib/api';
 
 const STATUS_LABELS: Record<string, string> = {
   confirmed: 'Confirmed',
@@ -22,39 +22,25 @@ const STATUS_LABELS: Record<string, string> = {
 };
 
 export function LookupPage() {
-  const [bookingNumber, setBookingNumber] = useState('');
-  const [phone, setPhone] = useState('');
   const [booking, setBooking] = useState<any>(null);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
 
   const [rating, setRating] = useState<number | null>(5);
   const [comment, setComment] = useState('');
   const [feedbackSent, setFeedbackSent] = useState(false);
 
-  const saved = getSavedBookings();
+  useEffect(() => {
+    api<{ authenticated: boolean; reservation?: any }>('/public/guest/session')
+      .then((res) => {
+        if (res.authenticated && res.reservation) setBooking(res.reservation);
+      })
+      .catch(() => {});
+  }, []);
 
-  async function findBooking(num: string, ph: string) {
-    setBusy(true);
-    setError('');
-    try {
-      const res = await api<any>('/public/reservations/lookup', {
-        method: 'POST',
-        body: { bookingNumber: num.trim().toUpperCase(), phone: ph.trim() },
-      });
-      setBooking(res);
-      setFeedbackSent(false);
-    } catch (err: any) {
-      setBooking(null);
-      setError(err.message || 'Reservation not found');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleLookup(e: React.FormEvent) {
-    e.preventDefault();
-    await findBooking(bookingNumber, phone);
+  async function signOutGuest() {
+    await api('/public/guest/logout', { method: 'POST' }).catch(() => {});
+    setBooking(null);
+    setFeedbackSent(false);
   }
 
   async function handleFeedback(e: React.FormEvent) {
@@ -66,7 +52,6 @@ export function LookupPage() {
         method: 'POST',
         body: {
           bookingNumber: booking.bookingNumber,
-          phone,
           rating,
           comment: comment.trim(),
         },
@@ -87,74 +72,23 @@ export function LookupPage() {
           <p className="text-xs font-medium uppercase tracking-wider text-accent">Reservation Desk</p>
           <h1 className="font-display mt-1 text-4xl font-semibold sm:text-5xl">Find a booking</h1>
           <p className="mt-2 text-sm text-muted-foreground">
-            Enter your booking number and the phone number on your reservation to inspect your folio, send payment proof, or review your stay.
+            Verify your booking with a one-time passcode via WhatsApp, Email, or SMS to view your folio, send payment proof, or review your stay.
           </p>
         </div>
 
-        <Card>
-          <CardContent className="p-6">
-            <form onSubmit={handleLookup} className="grid gap-4 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
-              <div className="space-y-1.5">
-                <Label>Booking Number</Label>
-                <Input
-                  required
-                  value={bookingNumber}
-                  onChange={(e) => setBookingNumber(e.target.value)}
-                  placeholder="e.g. OAS-..."
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Phone Number</Label>
-                <Input
-                  required
-                  type="tel"
-                  value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
-                  placeholder="03XX-XXXXXXX"
-                />
-              </div>
-              <Button type="submit" variant="accent" disabled={busy}>
-                <Search className="h-4 w-4" />
-                {busy ? 'Searching…' : 'Find'}
-              </Button>
-            </form>
-
-            {saved.length > 0 && (
-              <div className="mt-5 border-t border-border pt-4">
-                <p className="mb-2 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                  <BookmarkCheck className="h-3.5 w-3.5 text-accent" />
-                  Saved on this browser
-                </p>
-                <div className="flex flex-wrap gap-2">
-                  {saved.map((item) => (
-                    <Button
-                      key={item.bookingNumber}
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => {
-                        setBookingNumber(item.bookingNumber);
-                        setPhone(item.phone);
-                        if (item.phone) findBooking(item.bookingNumber, item.phone);
-                      }}
-                    >
-                      <span className="font-mono">{item.bookingNumber}</span>
-                      <span className="text-muted-foreground">· {item.guestName}</span>
-                    </Button>
-                  ))}
-                </div>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        {error && (
-          <Alert severity="error" className="mt-6">
-            {error}
-          </Alert>
-        )}
-
-        {booking && (
+        {!booking ? (
+          <Card>
+            <CardContent className="p-6">
+              <GuestOtpGate
+                ctaLabel="Verify & Open Booking"
+                onVerified={(res) => {
+                  setBooking(res);
+                  setFeedbackSent(false);
+                }}
+              />
+            </CardContent>
+          </Card>
+        ) : (
           <div className="mt-6 space-y-6">
             <Card>
               <CardHeader>
@@ -166,11 +100,17 @@ export function LookupPage() {
                       Status: <span className="font-semibold text-foreground">{STATUS_LABELS[booking.status] || booking.status}</span>
                     </p>
                   </div>
-                  {booking.status === 'checked_in' && (
-                    <Button asChild variant="accent" size="sm">
-                      <Link to="/order">Order Food to Room</Link>
+                  <div className="flex flex-wrap gap-2">
+                    {booking.status === 'checked_in' && (
+                      <Button asChild variant="accent" size="sm">
+                        <Link to="/order">Order Food to Room</Link>
+                      </Button>
+                    )}
+                    <Button type="button" variant="outline" size="sm" onClick={signOutGuest}>
+                      <LogOut className="h-3.5 w-3.5" />
+                      Switch Booking
                     </Button>
-                  )}
+                  </div>
                 </div>
               </CardHeader>
               <CardContent className="space-y-5">
@@ -217,10 +157,11 @@ export function LookupPage() {
                       <PaymentAccounts amount={booking.balance} />
                       <PaymentProofForm
                         defaultAmount={booking.balance}
+                        allowReceiptUpload
                         submit={(f) =>
                           api('/public/payments/claim', {
                             method: 'POST',
-                            body: { ...f, bookingNumber: booking.bookingNumber, phone: phone || f.phone },
+                            body: { ...f, bookingNumber: booking.bookingNumber },
                           })
                         }
                       />

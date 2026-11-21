@@ -3,8 +3,30 @@ export const API = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '');
 export function media(src?: string | null): string {
   if (!src) return '';
   if (/^https?:\/\//.test(src) || src.startsWith('/photos') || src.startsWith('data:')) return src;
-  if (src.startsWith('/uploads')) return `${API.replace(/\/api$/, '')}${src}`;
+  if (src.startsWith('/uploads') || src.startsWith('/api/public/media')) {
+    return `${API.replace(/\/api$/, '')}${src}`;
+  }
   return src;
+}
+
+let refreshPromise: Promise<boolean> | null = null;
+
+async function tryRefreshAdminSession(): Promise<boolean> {
+  if (refreshPromise) return refreshPromise;
+  refreshPromise = fetch(`${API}/auth/refresh`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Requested-With': 'XMLHttpRequest',
+    },
+  })
+    .then((res) => res.ok)
+    .catch(() => false)
+    .finally(() => {
+      refreshPromise = null;
+    });
+  return refreshPromise;
 }
 
 export async function api<T = any>(
@@ -15,8 +37,10 @@ export async function api<T = any>(
   try {
     response = await fetch(`${API}${path}`, {
       method: options.method || 'GET',
+      credentials: 'include',
       headers: {
         'Content-Type': 'application/json',
+        'X-Requested-With': 'XMLHttpRequest',
         ...(options.token ? { Authorization: `Bearer ${options.token}` } : {}),
         ...(options.headers || {}),
       },
@@ -30,44 +54,77 @@ export async function api<T = any>(
   return data as T;
 }
 
-export function getAdminToken(): string {
-  try {
-    return localStorage.getItem('oasis_admin_token') || '';
-  } catch {
-    return '';
-  }
-}
-
-export function setAdminToken(token: string | null) {
-  try {
-    if (token) localStorage.setItem('oasis_admin_token', token);
-    else localStorage.removeItem('oasis_admin_token');
-  } catch {
-    /* ignore */
-  }
-}
-
 export async function adminApi<T = any>(
   path: string,
   options: { method?: string; body?: unknown; unlockToken?: string } = {},
 ): Promise<T> {
-  const token = getAdminToken();
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'X-Requested-With': 'XMLHttpRequest',
+  };
   if (options.unlockToken) headers['X-Settings-Token'] = options.unlockToken;
-  return api<T>(path, { ...options, token, headers });
+
+  const exec = () =>
+    fetch(`${API}${path}`, {
+      method: options.method || 'GET',
+      credentials: 'include',
+      headers,
+      body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+    });
+
+  let response: Response;
+  try {
+    response = await exec();
+  } catch {
+    throw new Error('The hotel system cannot be reached. Check your connection, or WhatsApp the desk.');
+  }
+
+  const canAutoRefresh = !['/auth/login', '/auth/refresh', '/auth/logout', '/auth/setup-admin'].includes(path);
+  if (response.status === 401 && canAutoRefresh) {
+    const refreshed = await tryRefreshAdminSession();
+    if (refreshed) {
+      response = await exec();
+    }
+  }
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.message || 'Something went wrong');
+  return data as T;
 }
 
-export async function adminUploadImage(file: File): Promise<{ url: string }> {
-  const token = getAdminToken();
+export async function adminUploadImage(file: File): Promise<{ url: string; provider?: string }> {
   const form = new FormData();
   form.append('image', file);
-  const res = await fetch(`${API}/admin/uploads`, {
+
+  const exec = () =>
+    fetch(`${API}/admin/uploads`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'X-Requested-With': 'XMLHttpRequest' },
+      body: form,
+    });
+
+  let res = await exec();
+  if (res.status === 401) {
+    const refreshed = await tryRefreshAdminSession();
+    if (refreshed) res = await exec();
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.message || 'Upload failed');
+  return data;
+}
+
+export async function guestUploadPaymentProof(file: File): Promise<{ url: string; provider?: string }> {
+  const form = new FormData();
+  form.append('image', file);
+  const res = await fetch(`${API}/public/payments/proof-upload`, {
     method: 'POST',
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    credentials: 'include',
+    headers: { 'X-Requested-With': 'XMLHttpRequest' },
     body: form,
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.message || 'Upload failed');
+  if (!res.ok) throw new Error(data.message || 'Could not upload receipt screenshot');
   return data;
 }
 

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Alert, Drawer } from '@mui/material';
-import { Download, Moon, Plus, Printer, RefreshCw, Search, X } from 'lucide-react';
+import { Download, MessageCircle, Moon, Plus, Printer, RefreshCw, Search, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { AdminLayout } from '@/src/pages/admin/AdminLayout';
 import { Button } from '@/src/components/ui/button';
@@ -14,7 +14,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Tabs, TabsList, TabsTrigger } from '@/src/components/ui/tabs';
 import { Textarea } from '@/src/components/ui/textarea';
 import { SUPER, useAdminAuth } from '@/src/context/AdminAuthContext';
-import { API, addDays, adminApi, getAdminToken, pkr, pretty, todayISO } from '@/src/lib/api';
+import { API, addDays, adminApi, pkr, pretty, todayISO } from '@/src/lib/api';
 
 const STATUS_TABS = ['all', 'confirmed', 'checked_in', 'checked_out', 'cancelled', 'no_show'];
 
@@ -263,6 +263,8 @@ function ReservationDrawer({
   const [internalNotes, setInternalNotes] = useState(reservation.internalNotes || '');
   const [confirmStatus, setConfirmStatus] = useState<string | null>(null);
   const [invoiceData, setInvoiceData] = useState<any | null>(null);
+  const [waOpen, setWaOpen] = useState(false);
+  const [waText, setWaText] = useState('');
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -362,9 +364,8 @@ function ReservationDrawer({
 
   async function downloadPdf() {
     try {
-      const token = getAdminToken();
       const res = await fetch(`${API}/admin/reservations/${reservation._id}/invoice.pdf`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        credentials: 'include',
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -390,6 +391,29 @@ function ReservationDrawer({
       setInvoiceData(inv);
     } catch (err: any) {
       toast.error(err.message || 'Could not load invoice');
+    }
+  }
+
+  async function sendWhatsAppQuick(e: React.FormEvent) {
+    e.preventDefault();
+    if (!waText.trim()) return;
+    setBusy(true);
+    try {
+      const res = await adminApi<{ mode: string }>('/admin/whatsapp/send-update', {
+        method: 'POST',
+        body: { reservationId: reservation._id, message: waText.trim() },
+      });
+      toast.success(
+        res.mode === 'dry_run'
+          ? 'WhatsApp update logged (Dry-Run mode)'
+          : `WhatsApp update sent to ${reservation.guest?.phone}`,
+      );
+      setWaOpen(false);
+      setWaText('');
+    } catch (err: any) {
+      toast.error(err.message || 'Could not send WhatsApp update');
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -442,6 +466,19 @@ function ReservationDrawer({
           <Button size="sm" variant="outline" onClick={downloadPdf}>
             <Download className="h-3.5 w-3.5" />
             PDF
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              setWaText(
+                `Assalam-o-Alaikum ${reservation.guestName}, update for your Oasis Resort Skardu stay (${reservation.bookingNumber}): `,
+              );
+              setWaOpen(true);
+            }}
+          >
+            <MessageCircle className="h-3.5 w-3.5" />
+            WhatsApp Guest
           </Button>
         </div>
 
@@ -714,6 +751,43 @@ function ReservationDrawer({
           )}
         </DialogContent>
       </Dialog>
+
+      {/* WhatsApp Guest Update Dialog */}
+      <Dialog open={waOpen} onOpenChange={(o) => !o && setWaOpen(false)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <MessageCircle className="h-4 w-4 text-emerald-600" />
+              WhatsApp {reservation.guestName}
+            </DialogTitle>
+            <DialogDescription>
+              Sends directly to {reservation.guest?.phone || 'guest phone'} for booking {reservation.bookingNumber}.
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={sendWhatsAppQuick} className="space-y-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="wa-quick-msg">Message</Label>
+              <Textarea
+                id="wa-quick-msg"
+                rows={4}
+                required
+                maxLength={2000}
+                value={waText}
+                onChange={(e) => setWaText(e.target.value)}
+                placeholder="Type an arrival update, Skardu road advisory, or room readiness note..."
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="outline" onClick={() => setWaOpen(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" variant="accent" disabled={busy || !waText.trim()}>
+                {busy ? 'Sending…' : 'Send WhatsApp'}
+              </Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }
@@ -856,6 +930,9 @@ function NewDeskBookingDialog({
                   <SelectItem value="phone">Phone</SelectItem>
                   <SelectItem value="whatsapp">WhatsApp</SelectItem>
                   <SelectItem value="agency">Agency</SelectItem>
+                  <SelectItem value="booking_com">Booking.com</SelectItem>
+                  <SelectItem value="airbnb">Airbnb</SelectItem>
+                  <SelectItem value="ota">Other OTA</SelectItem>
                 </SelectContent>
               </Select>
             </div>

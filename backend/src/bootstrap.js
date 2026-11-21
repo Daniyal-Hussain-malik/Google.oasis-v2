@@ -177,14 +177,8 @@ export async function bootstrapBackend() {
   }
   await Settings.current();
 
-  if (!(await User.count({ where: { email: env.adminEmail.toLowerCase() } }))) {
+  if (env.adminEmail && env.adminPassword && !(await User.count({ where: { email: env.adminEmail } }))) {
     await User.create({ name: 'Kashif Hassan (Admin)', email: env.adminEmail, password: env.adminPassword, role: 'super_admin' });
-  }
-  if (!(await User.count({ where: { email: 'desk@oasisresort.pk' } }))) {
-    await User.create({ name: 'Amina Balti (Front Desk)', email: 'desk@oasisresort.pk', password: 'DeskPassword123!', role: 'frontdesk' });
-  }
-  if (!(await User.count({ where: { email: 'chef@oasisresort.pk' } }))) {
-    await User.create({ name: 'Ustad Tariq (Head Chef)', email: 'chef@oasisresort.pk', password: 'ChefPassword123!', role: 'chef' });
   }
 
   // Seed realistic initial reservations, published reviews, and blog post if empty

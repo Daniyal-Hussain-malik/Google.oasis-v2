@@ -2,14 +2,50 @@ import crypto from 'node:crypto';
 import { Router } from 'express';
 import { Op } from 'sequelize';
 import { env } from '../config/env.js';
-import { requireAuth, signToken } from '../middleware/auth.js';
+import { SUPER_ADMIN } from '../config/roles.js';
+import {
+  clearAuthCookies,
+  issueSessionTokens,
+  REFRESH_COOKIE,
+  requireAuth,
+  revokeAllUserTokens,
+  revokeRefreshToken,
+  rotateRefreshToken,
+  setAuthCookies,
+} from '../middleware/auth.js';
 import { loginLimit, resetLimit } from '../middleware/limits.js';
 import User from '../models/User.js';
 import { passwordResetRequested, passwordWasChanged } from '../services/notifications.js';
-import { badRequest, HttpError, text } from '../utils/http.js';
+import { badRequest, HttpError, isEmail, text } from '../utils/http.js';
 import { passwordProblem } from '../utils/password.js';
 
 const router = Router();
+
+// First-run status: lets an unconfigured deployment claim the initial Super Admin without seeded default passwords.
+router.get('/setup-status', async (_req, res) => {
+  const userCount = await User.count();
+  res.json({ needsSetup: userCount === 0 });
+});
+
+router.post('/setup-admin', loginLimit, async (req, res) => {
+  const existing = await User.count();
+  if (existing > 0) {
+    throw new HttpError(403, 'Initial administrator has already been configured.');
+  }
+  const name = text(req.body?.name, 80);
+  const email = text(req.body?.email, 120).toLowerCase();
+  const password = String(req.body?.password || '');
+  if (name.length < 2) throw badRequest('Enter your full name.');
+  if (!isEmail(email)) throw badRequest('Enter a valid email address.');
+  const problem = passwordProblem(password);
+  if (problem) throw badRequest(problem);
+
+  const user = await User.create({ name, email, password, role: SUPER_ADMIN });
+  const tokens = await issueSessionTokens(user, req);
+  setAuthCookies(req, res, tokens);
+  const safeUser = await User.findByPk(user.id);
+  res.status(201).json({ ok: true, user: safeUser });
+});
 
 router.post('/login', loginLimit, async (req, res) => {
   const email = text(req.body?.email, 120).toLowerCase();
@@ -22,7 +58,36 @@ router.post('/login', loginLimit, async (req, res) => {
   }
   user.lastLoginAt = new Date();
   await user.save();
-  res.json({ token: signToken(user), user });
+
+  const tokens = await issueSessionTokens(user, req);
+  setAuthCookies(req, res, tokens);
+  const safeUser = await User.findByPk(user.id);
+  res.json({ ok: true, user: safeUser });
+});
+
+router.post('/refresh', async (req, res) => {
+  const rawRefresh = req.cookies?.[REFRESH_COOKIE] || '';
+  try {
+    const rotated = await rotateRefreshToken(rawRefresh, req);
+    setAuthCookies(req, res, rotated);
+    res.json({ ok: true, user: rotated.user });
+  } catch (err) {
+    clearAuthCookies(req, res);
+    throw err;
+  }
+});
+
+router.post('/logout', async (req, res) => {
+  const rawRefresh = req.cookies?.[REFRESH_COOKIE] || '';
+  await revokeRefreshToken(rawRefresh).catch(() => {});
+  clearAuthCookies(req, res);
+  res.json({ ok: true });
+});
+
+router.post('/logout-all', requireAuth, async (req, res) => {
+  await revokeAllUserTokens(req.user.id);
+  clearAuthCookies(req, res);
+  res.json({ ok: true });
 });
 
 const RESET_MINUTES = 15;
@@ -59,6 +124,8 @@ router.post('/reset', resetLimit, async (req, res) => {
   user.password = password;
   user.passwordChangedAt = new Date();
   await user.save();
+  await revokeAllUserTokens(user.id);
+  clearAuthCookies(req, res);
   passwordWasChanged(user);
   res.json({ ok: true });
 });
@@ -75,7 +142,11 @@ router.post('/password', requireAuth, async (req, res) => {
   const user = await User.unscoped().findByPk(req.user.id);
   if (!(await user.checkPassword(current))) throw new HttpError(401, 'The current password is incorrect.');
   user.password = next;
+  user.passwordChangedAt = new Date();
   await user.save();
+  await revokeAllUserTokens(user.id);
+  const tokens = await issueSessionTokens(user, req);
+  setAuthCookies(req, res, tokens);
   res.json({ ok: true });
 });
 

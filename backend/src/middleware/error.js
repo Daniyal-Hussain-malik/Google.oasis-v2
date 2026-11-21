@@ -1,5 +1,8 @@
 import multer from 'multer';
 import { env } from '../config/env.js';
+import { logger } from '../services/logger.js';
+import { recordServerError } from '../services/monitoring.js';
+import { captureBackendException } from '../services/sentry.js';
 import { HttpError } from '../utils/http.js';
 
 export function notFoundHandler(req, res) {
@@ -32,6 +35,22 @@ export function errorHandler(error, req, res, next) {
     return res.status(413).json({ message: 'The request is too large.' });
   }
 
-  console.error(error);
+  logger.error(
+    {
+      err: error,
+      requestId: req.id,
+      method: req.method,
+      path: req.originalUrl,
+    },
+    'Unhandled backend error',
+  );
+  captureBackendException(error, {
+    requestId: req.id,
+    method: req.method,
+    path: req.originalUrl,
+    userId: req.user?.id,
+    userRole: req.user?.role,
+  });
+  recordServerError(error, req);
   return res.status(500).json({ message: env.production ? 'Something went wrong on our side.' : error.message });
 }

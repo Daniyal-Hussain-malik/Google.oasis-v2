@@ -14,7 +14,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Tabs, TabsList, TabsTrigger } from '@/src/components/ui/tabs';
 import { Textarea } from '@/src/components/ui/textarea';
 import { SUPER, useAdminAuth } from '@/src/context/AdminAuthContext';
-import { adminApi, adminUploadImage, pkr } from '@/src/lib/api';
+import { adminApi, adminUploadImage, media, pkr } from '@/src/lib/api';
 
 export function AdminPaymentProofsPage() {
   const [claims, setClaims] = useState<any[]>([]);
@@ -114,6 +114,16 @@ export function AdminPaymentProofsPage() {
                         <TableCell>
                           <p className="text-xs font-medium capitalize">{c.method?.replaceAll('_', ' ')}</p>
                           <p className="font-mono text-xs text-muted-foreground">{c.reference}</p>
+                          {c.proofImageUrl && (
+                            <a
+                              href={media(c.proofImageUrl)}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-[11px] font-medium text-accent underline"
+                            >
+                              View Receipt
+                            </a>
+                          )}
                         </TableCell>
                         <TableCell className="text-xs">{c.senderName || '—'}</TableCell>
                         <TableCell className="text-right font-mono text-xs font-semibold tabular-nums">{pkr(c.amount)}</TableCell>

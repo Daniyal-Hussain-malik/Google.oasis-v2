@@ -31,6 +31,19 @@ function normalizeParams(params) {
   return [];
 }
 
+function normalizeSqliteError(err) {
+  if (!err || typeof err !== 'object') return err;
+  if (err.code === 'ERR_SQLITE_ERROR') {
+    const baseCode = typeof err.errcode === 'number' ? err.errcode & 0xff : 0;
+    if (err.errcode === 2067) err.code = 'SQLITE_CONSTRAINT_UNIQUE';
+    else if (err.errcode === 1555) err.code = 'SQLITE_CONSTRAINT_PRIMARYKEY';
+    else if (err.errcode === 787) err.code = 'SQLITE_CONSTRAINT_FOREIGNKEY';
+    else if (baseCode === 19 || /constraint failed/i.test(err.message || '')) err.code = 'SQLITE_CONSTRAINT';
+    else if (baseCode === 5 || /database is locked/i.test(err.message || '')) err.code = 'SQLITE_BUSY';
+  }
+  return err;
+}
+
 export class Database {
   constructor(filename, mode, callback) {
     if (typeof mode === 'function') {
@@ -86,7 +99,7 @@ export class Database {
         const meta = new Statement(info?.lastInsertRowid, info?.changes);
         if (callback) callback.call(meta, null);
       } catch (err) {
-        if (callback) callback.call(new Statement(), err);
+        if (callback) callback.call(new Statement(), normalizeSqliteError(err));
       }
     });
     return this;
@@ -105,7 +118,7 @@ export class Database {
         const rows = hasNamed ? stmt.all(clean) : stmt.all(...(Array.isArray(clean) ? clean : []));
         if (callback) callback.call(new Statement(), null, rows || []);
       } catch (err) {
-        if (callback) callback.call(new Statement(), err, []);
+        if (callback) callback.call(new Statement(), normalizeSqliteError(err), []);
       }
     });
     return this;

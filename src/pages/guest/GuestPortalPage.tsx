@@ -1,18 +1,15 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Alert } from '@mui/material';
 import { LogOut, RefreshCw, UtensilsCrossed } from 'lucide-react';
 import { GuestLayout } from '@/src/components/guest/GuestLayout';
 import { FacilityShowcase } from '@/src/components/guest/FacilitySection';
+import { GuestOtpGate } from '@/src/components/guest/GuestOtpGate';
 import { LoyaltyPanel } from '@/src/components/guest/LoyaltyPanel';
 import { PaymentAccounts, PaymentProofForm } from '@/src/components/guest/PaymentSection';
 import { Button } from '@/src/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/src/components/ui/card';
-import { Input } from '@/src/components/ui/input';
-import { Label } from '@/src/components/ui/label';
-import { api, getSavedBookings, pkr, pretty } from '@/src/lib/api';
+import { api, pkr, pretty } from '@/src/lib/api';
 
-const LOGIN_KEY = 'oasis_guest_login';
 const STAY_LABEL: Record<string, string> = {
   confirmed: 'Confirmed',
   checked_in: 'Checked In',
@@ -21,53 +18,34 @@ const STAY_LABEL: Record<string, string> = {
   no_show: 'No Show',
 };
 
-function readCreds() {
-  try {
-    return JSON.parse(sessionStorage.getItem(LOGIN_KEY) || 'null');
-  } catch {
-    return null;
-  }
-}
-
 export function GuestPortalPage() {
-  const [creds, setCreds] = useState<{ bookingNumber: string; phone: string } | null>(readCreds);
   const [booking, setBooking] = useState<any>(null);
-  const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
-  const [formNum, setFormNum] = useState('');
-  const [formPhone, setFormPhone] = useState('');
-
-  const loadBooking = useCallback(async (c: { bookingNumber: string; phone: string }) => {
+  const loadSession = useCallback(async () => {
     setBusy(true);
-    setError('');
     try {
-      const payload = { bookingNumber: c.bookingNumber.trim().toUpperCase(), phone: c.phone.trim() };
-      const res = await api('/public/reservations/lookup', { method: 'POST', body: payload });
-      setBooking(res);
-      setCreds(payload);
-      sessionStorage.setItem(LOGIN_KEY, JSON.stringify(payload));
-    } catch (err: any) {
+      const res = await api<{ authenticated: boolean; reservation?: any }>('/public/guest/session');
+      if (res.authenticated && res.reservation) {
+        setBooking(res.reservation);
+      } else {
+        setBooking(null);
+      }
+    } catch {
       setBooking(null);
-      setCreds(null);
-      sessionStorage.removeItem(LOGIN_KEY);
-      setError(err.message || 'Could not sign in');
     } finally {
       setBusy(false);
     }
   }, []);
 
   useEffect(() => {
-    if (creds && !booking) loadBooking(creds);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    loadSession();
+  }, [loadSession]);
 
-  function logout() {
-    sessionStorage.removeItem(LOGIN_KEY);
-    setCreds(null);
+  async function logout() {
+    await api('/public/guest/logout', { method: 'POST' }).catch(() => {});
     setBooking(null);
   }
-
-  const saved = getSavedBookings();
 
   return (
     <GuestLayout>
@@ -78,58 +56,18 @@ export function GuestPortalPage() {
               <p className="text-xs font-medium uppercase tracking-wider text-accent">Guest Portal</p>
               <h1 className="font-display mt-1 text-4xl font-semibold">Welcome back</h1>
               <p className="mt-2 text-sm text-muted-foreground">
-                Sign in with your booking number and phone to manage your stay, order dining, or check your room folio.
+                Verify your booking with a one-time passcode via WhatsApp, Email, or SMS to manage your stay, order dining, or check your folio.
               </p>
             </div>
 
             <Card>
               <CardContent className="p-6">
-                <form
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    loadBooking({ bookingNumber: formNum, phone: formPhone });
-                  }}
-                  className="space-y-4"
-                >
-                  <div className="space-y-1.5">
-                    <Label>Booking Number</Label>
-                    <Input required value={formNum} onChange={(e) => setFormNum(e.target.value)} placeholder="OAS-..." />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label>Phone on Reservation</Label>
-                    <Input required type="tel" value={formPhone} onChange={(e) => setFormPhone(e.target.value)} placeholder="03XX-XXXXXXX" />
-                  </div>
-                  {error && <Alert severity="error">{error}</Alert>}
-                  <Button type="submit" variant="accent" className="w-full" disabled={busy}>
-                    {busy ? 'Checking…' : 'Access My Stay'}
-                  </Button>
-                </form>
+                <GuestOtpGate
+                  ctaLabel="Access My Stay"
+                  onVerified={(res) => setBooking(res)}
+                />
               </CardContent>
             </Card>
-
-            {saved.length > 0 && (
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm">Saved Bookings</CardTitle>
-                </CardHeader>
-                <CardContent className="divide-y divide-border">
-                  {saved.map((item) => (
-                    <button
-                      key={item.bookingNumber}
-                      type="button"
-                      onClick={() => {
-                        setFormNum(item.bookingNumber);
-                        setFormPhone(item.phone);
-                      }}
-                      className="flex w-full items-center justify-between py-2.5 text-left text-sm hover:text-accent cursor-pointer"
-                    >
-                      <span className="font-mono font-medium">{item.bookingNumber}</span>
-                      <span className="text-muted-foreground">{item.guestName}</span>
-                    </button>
-                  ))}
-                </CardContent>
-              </Card>
-            )}
           </div>
         ) : (
           <div className="space-y-8">
@@ -154,7 +92,7 @@ export function GuestPortalPage() {
                     </Link>
                   </Button>
                 )}
-                <Button variant="outline" size="sm" disabled={busy} onClick={() => creds && loadBooking(creds)}>
+                <Button variant="outline" size="sm" disabled={busy} onClick={loadSession}>
                   <RefreshCw className="h-4 w-4" />
                   Refresh
                 </Button>
@@ -213,11 +151,10 @@ export function GuestPortalPage() {
               </Card>
             </div>
 
-            {booking.loyalty && creds?.phone && (
+            {booking.loyalty && (
               <LoyaltyPanel
                 loyalty={booking.loyalty}
                 bookingNumber={booking.bookingNumber}
-                phone={creds.phone}
                 onRedeemed={({ booking: updatedBooking, loyalty: updatedLoyalty }) =>
                   setBooking({ ...updatedBooking, loyalty: updatedLoyalty })
                 }
@@ -233,10 +170,11 @@ export function GuestPortalPage() {
                   <PaymentAccounts amount={booking.balance} />
                   <PaymentProofForm
                     defaultAmount={booking.balance}
+                    allowReceiptUpload
                     submit={(f) =>
                       api('/public/payments/claim', {
                         method: 'POST',
-                        body: { ...f, bookingNumber: booking.bookingNumber, phone: creds?.phone || f.phone },
+                        body: { ...f, bookingNumber: booking.bookingNumber },
                       })
                     }
                   />

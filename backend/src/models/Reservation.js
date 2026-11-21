@@ -1,6 +1,7 @@
 import { Base, D, Row, enumCol, fk, int, money, rowColumns, text } from './_base.js';
 
 export const STATUSES = ['confirmed', 'checked_in', 'checked_out', 'cancelled', 'no_show'];
+export const SOURCES = ['website', 'desk', 'phone', 'whatsapp', 'agency', 'booking_com', 'airbnb', 'ota'];
 export const HOLDING = ['confirmed', 'checked_in'];
 export const FOLIO_DEPARTMENTS = ['restaurant', 'service', 'adjustment', 'discount'];
 const PAYMENT_METHODS = ['online_demo', 'cash', 'card', 'bank_transfer', 'jazzcash', 'easypaisa', 'refund'];
@@ -106,7 +107,7 @@ Reservation.setup(
   {
     bookingNumber: { ...text({ len: 20, required: true }), unique: true },
     status: enumCol(STATUSES, 'confirmed'),
-    source: enumCol(['website', 'desk', 'phone', 'whatsapp', 'agency'], 'website'),
+    source: enumCol(SOURCES, 'website'),
     guest_firstName: text({ len: 60, required: true }),
     guest_lastName: text({ len: 60, required: true }),
     guest_phone: text({ len: 30, required: true }),

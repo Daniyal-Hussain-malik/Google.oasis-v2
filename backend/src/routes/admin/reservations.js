@@ -83,7 +83,7 @@ router.post('/', async (req, res) => {
     guest,
     specialRequests: text(body.specialRequests, 1000),
     offer: text(body.offer, 120),
-    source: ['desk', 'phone', 'whatsapp', 'agency'].includes(body.source) ? body.source : 'desk',
+    source: ['desk', 'phone', 'whatsapp', 'agency', 'booking_com', 'airbnb', 'ota'].includes(body.source) ? body.source : 'desk',
     by: req.user._id,
   });
   bookingCreated(reservation);
